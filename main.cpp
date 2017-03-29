@@ -1,36 +1,50 @@
 // main.cpp — 极简拼音输入法（Win32）
-// 功能: 右Shift切换中英文，全局键盘钩子拦截，候选框GDI绘制，剪贴板注入，自学习词库
-// 编译: cl.exe /utf-8 /O2 /MT /EHsc /DUNICODE /D_UNICODE main.cpp /Fe:PinyinIME.exe user32.lib gdi32.lib kernel32.lib
+// 功能: 右Shift切换中英文, 全局键盘钩子, 候选框GDI绘制, 剪贴板注入, 自学习词库, 设置窗口(纯Win32)
+// 编译: 运行 build.bat 或在 VS Developer Command Prompt 中执行上面的 cl.exe 命令
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <commctrl.h>
+#include <shellapi.h>
 #include <imm.h>
 #include <oleacc.h>
+#include <UIAutomationClient.h>
 #pragma comment(lib, "imm32.lib")
 #pragma comment(lib, "oleacc.lib")
 #pragma comment(lib, "Ole32.lib")
+#pragma comment(lib, "OleAut32.lib")
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "UIAutomationCore.lib")
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <fstream>
-#include <sstream>
 #include "dictionary.h"
+#include "settings.h"
 
 // ==================== 自定义消息 ====================
 #define WM_INJECT_TEXT  (WM_USER + 1)
+#define WM_TRAYICON     (WM_USER + 2)
+#define WM_OPEN_SETTINGS (WM_USER + 3)
 
 // ==================== 全局变量 ====================
 static HINSTANCE g_hInst = nullptr;
 static HWND g_hWnd = nullptr;          // 消息窗口
 static HHOOK g_hHook = nullptr;        // 键盘钩子
 static bool g_chineseMode = false;     // 中英文模式
+static NOTIFYICONDATAW g_trayIcon = {}; // 托盘图标
 
 // 延迟注入队列（钩子回调中不能直接 SendInput）
 static std::wstring g_pendingText;
 static CRITICAL_SECTION g_pendingLock;
+
+// ==================== 全局设置 ====================
+PinyinSettings g_settings;
 
 // ==================== 前向声明 ====================
 class PinyinEngine;
@@ -142,6 +156,202 @@ public:
         }
     }
 
+    // 获取常用候选词 (sys+user merged, sorted)
+    std::vector<std::pair<std::string,int>> getTopCandidates(const std::string& syl, int n) {
+        std::vector<std::pair<std::string,int>> result;
+        auto it = m_dict.entries.find(syl);
+        if (it != m_dict.entries.end()) {
+            for (auto& p : it->second) result.push_back(p);
+        }
+        auto uit = m_userDict.find(syl);
+        if (uit != m_userDict.end()) {
+            for (auto& p : uit->second) result.push_back(p);
+        }
+        // 去重取最高频
+        std::unordered_map<std::string, int> dedup;
+        for (auto& p : result) dedup[p.first] = (std::max)(dedup[p.first], p.second);
+        result.clear();
+        for (auto& kv : dedup) result.push_back({kv.first, kv.second});
+        std::sort(result.begin(), result.end(),
+            [](const auto& a, const auto& b){ return a.second > b.second; });
+        if ((int)result.size() > n) result.resize(n);
+        return result;
+    }
+
+    // 有效拼音音节集合 (约410个, 含所有标准拼音)
+    static const std::unordered_set<std::string>& validSyllables() {
+        static std::unordered_set<std::string> s;
+        if (s.empty()) {
+            const char* raw[] = {
+                "a","ai","an","ang","ao",
+                "ba","bai","ban","bang","bao","bei","ben","beng","bi","bian","biao","bie","bin","bing","bo","bu",
+                "ca","cai","can","cang","cao","ce","cen","ceng","cha","chai","chan","chang","chao","che","chen",
+                "cheng","chi","chong","chou","chu","chuai","chuan","chuang","chui","chun","chuo","ci","cong",
+                "cou","cu","cuan","cui","cun","cuo",
+                "da","dai","dan","dang","dao","de","dei","den","deng","di","dian","diao","die","ding","diu",
+                "dong","dou","du","duan","dui","dun","duo",
+                "e","ei","en","eng","er",
+                "fa","fan","fang","fei","fen","feng","fo","fou","fu",
+                "ga","gai","gan","gang","gao","ge","gei","gen","geng","gong","gou","gu","gua","guai","guan",
+                "guang","gui","gun","guo",
+                "ha","hai","han","hang","hao","he","hei","hen","heng","hong","hou","hu","hua","huai","huan",
+                "huang","hui","hun","huo",
+                "ji","jia","jian","jiang","jiao","jie","jin","jing","jiong","jiu","ju","juan","jue","jun",
+                "ka","kai","kan","kang","kao","ke","kei","ken","keng","kong","kou","ku","kua","kuai","kuan",
+                "kuang","kui","kun","kuo",
+                "la","lai","lan","lang","lao","le","lei","leng","li","lia","lian","liang","liao","lie","lin",
+                "ling","liu","long","lou","lu","luan","lun","luo","lv","lve",
+                "ma","mai","man","mang","mao","me","mei","men","meng","mi","mian","miao","mie","min","ming",
+                "miu","mo","mou","mu",
+                "na","nai","nan","nang","nao","ne","nei","nen","neng","ni","nian","niang","niao","nie","nin",
+                "ning","niu","nong","nou","nu","nuan","nuo","nv","nve",
+                "o","ou",
+                "pa","pai","pan","pang","pao","pei","pen","peng","pi","pian","piao","pie","pin","ping","po",
+                "pou","pu",
+                "qi","qia","qian","qiang","qiao","qie","qin","qing","qiong","qiu","qu","quan","que","qun",
+                "ran","rang","rao","re","ren","reng","ri","rong","rou","ru","ruan","rui","run","ruo",
+                "sa","sai","san","sang","sao","se","sen","seng","sha","shai","shan","shang","shao","she",
+                "shei","shen","sheng","shi","shou","shu","shua","shuai","shuan","shuang","shui","shun","shuo",
+                "si","song","sou","su","suan","sui","sun","suo",
+                "ta","tai","tan","tang","tao","te","tei","teng","ti","tian","tiao","tie","ting","tong","tou",
+                "tu","tuan","tui","tun","tuo",
+                "wa","wai","wan","wang","wei","wen","weng","wo","wu",
+                "xi","xia","xian","xiang","xiao","xie","xin","xing","xiong","xiu","xu","xuan","xue","xun",
+                "ya","yan","yang","yao","ye","yi","yin","ying","yo","yong","you","yu","yuan","yue","yun",
+                "za","zai","zan","zang","zao","ze","zei","zen","zeng","zha","zhai","zhan","zhang","zhao",
+                "zhe","zhei","zhen","zheng","zhi","zhong","zhou","zhu","zhua","zhuai","zhuan","zhuang",
+                "zhui","zhun","zhuo","zi","zong","zou","zu","zuan","zui","zun","zuo"
+            };
+            int n = sizeof(raw)/sizeof(raw[0]);
+            for (int i = 0; i < n; i++) s.insert(raw[i]);
+        }
+        return s;
+    }
+
+    // 检查字符串是否都是有效拼音 (用于判断是否需要分词)
+    bool isAllValidPinyin(const std::string& str) {
+        const auto& vs = validSyllables();
+        // 用 DP 检查整个字符串是否可被完整分割为有效拼音
+        int n = (int)str.size();
+        std::vector<bool> dp(n + 1, false);
+        dp[0] = true;
+        for (int i = 0; i < n; i++) {
+            if (!dp[i]) continue;
+            for (int len = 1; len <= 6 && i + len <= n; len++) {
+                if (vs.count(str.substr(i, len))) dp[i + len] = true;
+            }
+        }
+        return dp[n];
+    }
+
+    struct Segmentation {
+        std::vector<std::string> sylls; // 拼音切分
+        int totalFreq = 0;
+        int minFreq = 0;
+        int count = 0;
+    };
+
+    // DP + 束搜索: 找到拼音串的最佳切分方案
+    std::vector<Segmentation> segmentPinyin(const std::string& buf) {
+        int n = (int)buf.size();
+        const auto& vs = validSyllables();
+        std::vector<std::vector<Segmentation>> dp(n + 1);
+        dp[0].push_back({{}, 0, 99999, 0});
+
+        for (int i = 0; i < n; i++) {
+            if (dp[i].empty()) continue;
+            for (int len = 1; len <= 6 && i + len <= n; len++) {
+                std::string syl = buf.substr(i, len);
+                if (!vs.count(syl)) continue;
+                int topFreq = 0;
+                auto cands = getTopCandidates(syl, 1);
+                if (!cands.empty()) topFreq = cands[0].second;
+                else topFreq = 1; // 有音节无词条, 给最低分
+
+                for (auto& seg : dp[i]) {
+                    Segmentation ns = seg;
+                    ns.sylls.push_back(syl);
+                    ns.totalFreq += topFreq;
+                    ns.minFreq = (std::min)(seg.minFreq, topFreq);
+                    ns.count = seg.count + 1;
+                    dp[i + len].push_back(ns);
+                }
+            }
+            // 束剪枝: 每个位置保留 top 8
+            if (dp[i].size() > 8) {
+                std::sort(dp[i].begin(), dp[i].end(),
+                    [](const Segmentation& a, const Segmentation& b) {
+                        // 优先: minFreq 高, 其次 totalFreq 高, 再次音节数少
+                        if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
+                        if (a.totalFreq != b.totalFreq) return a.totalFreq > b.totalFreq;
+                        return a.count < b.count;
+                    });
+                dp[i].resize(8);
+            }
+        }
+
+        auto& full = dp[n];
+        std::sort(full.begin(), full.end(),
+            [](const Segmentation& a, const Segmentation& b) {
+                if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
+                if (a.totalFreq != b.totalFreq) return a.totalFreq > b.totalFreq;
+                return a.count < b.count;
+            });
+        if (full.size() > 12) full.resize(12);
+        return full;
+    }
+
+    // 从切分方案生成组合候选词
+    std::vector<std::pair<std::string,int>> genCombinedCandidates(
+            const std::vector<Segmentation>& segs) {
+        std::vector<std::pair<std::string,int>> result;
+        std::unordered_set<std::string> seen;
+
+        for (auto& seg : segs) {
+            if (seg.sylls.empty()) continue;
+            // 获取每个音节的候选词
+            std::vector<std::vector<std::pair<std::string,int>>> perSyl;
+            perSyl.reserve(seg.sylls.size());
+            for (auto& syl : seg.sylls) {
+                auto cands = getTopCandidates(syl, 5);
+                if (cands.empty()) cands.push_back({syl, 1});
+                perSyl.push_back(cands);
+            }
+
+            // 策略1: 每个音节取 top-1 — 最可能的组合
+            {
+                std::string combined;
+                int sumFreq = 0;
+                for (size_t k = 0; k < perSyl.size(); k++) {
+                    combined += perSyl[k][0].first;
+                    sumFreq += perSyl[k][0].second;
+                }
+                if (seen.insert(combined).second)
+                    result.push_back({combined, sumFreq / (int)perSyl.size()});
+            }
+
+            // 策略2: 轮流替换其中一个音节为第2/3候选
+            for (size_t v = 0; v < perSyl.size() && result.size() < 40; v++) {
+                for (int ci = 1; ci < (int)perSyl[v].size() && ci <= 3; ci++) {
+                    std::string combined;
+                    int sumFreq = 0;
+                    for (size_t k = 0; k < perSyl.size(); k++) {
+                        int pick = (k == v) ? ci : 0;
+                        combined += perSyl[k][pick].first;
+                        sumFreq += perSyl[k][pick].second;
+                    }
+                    if (seen.insert(combined).second)
+                        result.push_back({combined, sumFreq / (int)perSyl.size()});
+                }
+            }
+        }
+        // 按平均频率排序
+        std::sort(result.begin(), result.end(),
+            [](const auto& a, const auto& b){ return a.second > b.second; });
+        if (result.size() > 30) result.resize(30);
+        return result;
+    }
+
     // 更新候选列表
     void updateCandidates() {
         m_candidates.clear();
@@ -188,6 +398,22 @@ public:
                 for (auto& p : kv.second) {
                     if (merged.find(p.first) == merged.end()) {
                         merged[p.first] = p.second - 200;
+                    }
+                }
+            }
+        }
+
+        // 4. 拼音分词组合匹配 (自动将长拼音切分为多词组合)
+        //    例如 "haiyoumeiyou" → hai+you+meiyou → "还有没有"
+        if (m_buffer.size() >= 3) {
+            auto segs = segmentPinyin(m_buffer);
+            if (!segs.empty()) {
+                auto combined = genCombinedCandidates(segs);
+                for (auto& c : combined) {
+                    if (merged.find(c.first) == merged.end()) {
+                        merged[c.first] = c.second - 150; // 略低于精确匹配
+                    } else {
+                        merged[c.first] = (std::max)(merged[c.first], c.second);
                     }
                 }
             }
@@ -264,22 +490,27 @@ public:
     }
 };
 
+// 前向声明 settings 相关 (在 settings.h include 之前)
+struct PinyinSettings;
+extern PinyinSettings g_settings;
+
 // ==================== CandidateWindow ====================
 class CandidateWindow {
 public:
     HWND m_hwnd = nullptr;
     HFONT m_font = nullptr;
     bool m_visible = false;
+    RECT m_settingsBtnRect = {}; // 设置按钮点击区域
 
-    static const COLORREF BG_COLOR = RGB(245, 245, 245);
-    static const COLORREF BORDER_COLOR = RGB(180, 180, 180);
-    static const COLORREF TEXT_COLOR = RGB(50, 50, 50);
-    static const COLORREF INDEX_COLOR = RGB(100, 100, 200);
-    static const COLORREF INPUT_COLOR = RGB(0, 100, 200);
+    COLORREF getBgColor()     { return g_settings.bgColor; }
+    COLORREF getBorderColor() { return g_settings.borderColor; }
+    COLORREF getTextColor()   { return g_settings.textColor; }
+    COLORREF getIndexColor()  { return g_settings.indexColor; }
+    COLORREF getInputColor()  { return g_settings.inputColor; }
 
     void create(HINSTANCE hInst) {
         m_font = CreateFontW(
-            -18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            -g_settings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
             L"Microsoft YaHei");
@@ -288,7 +519,8 @@ public:
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = wndProc;
         wc.hInstance = hInst;
-        wc.hbrBackground = CreateSolidBrush(BG_COLOR);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = CreateSolidBrush(getBgColor());
         wc.lpszClassName = L"PinyinIMECandidate";
         RegisterClassExW(&wc);
 
@@ -307,67 +539,187 @@ public:
         if (m_hwnd) { DestroyWindow(m_hwnd); m_hwnd = nullptr; }
     }
 
-    // 获取光标位置（多级降级策略）
+    // 获取文本光标位置（多级降级 — UI Automation → MSAA → Win32 → IME → 窗口 → 屏幕）
     POINT getCaretPosition() {
         POINT pt = {0, 0};
         bool found = false;
 
-        HWND hForeground = GetForegroundWindow();
-        if (hForeground) {
-            DWORD tid = GetWindowThreadProcessId(hForeground, nullptr);
-            GUITHREADINFO gti = {};
-            gti.cbSize = sizeof(gti);
-            
-            if (GetGUIThreadInfo(tid, &gti)) {
-                // 1. 标准 Win32 光标
-                if (gti.hwndCaret && (gti.rcCaret.right > 0 || gti.rcCaret.bottom > 0)) {
-                    POINT caretPt = {gti.rcCaret.left, gti.rcCaret.bottom};
-                    if (ClientToScreen(gti.hwndCaret, &caretPt)) {
-                        pt = caretPt;
+        // === 1. UI Automation — 现代应用首选 (Chrome/Edge/VSCode/Office/UWP 等) ===
+        IUIAutomation* pUIA = nullptr;
+        HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr,
+            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pUIA));
+        if (SUCCEEDED(hr) && pUIA) {
+            IUIAutomationElement* pFocused = nullptr;
+            hr = pUIA->GetFocusedElement(&pFocused);
+            if (SUCCEEDED(hr) && pFocused) {
+                // 1a. TextPattern: 获取精确文本光标
+                IUIAutomationTextPattern2* pText2 = nullptr;
+                hr = pFocused->GetCurrentPatternAs(UIA_TextPattern2Id,
+                    IID_PPV_ARGS(&pText2));
+                if (SUCCEEDED(hr) && pText2) {
+                    BOOL isActive = FALSE;
+                    IUIAutomationTextRange* pCaret = nullptr;
+                    if (SUCCEEDED(pText2->GetCaretRange(&isActive, &pCaret)) && pCaret) {
+                        SAFEARRAY* pRectArray = nullptr;
+                        if (SUCCEEDED(pCaret->GetBoundingRectangles(&pRectArray)) && pRectArray) {
+                            double* pData = nullptr;
+                            if (SUCCEEDED(SafeArrayAccessData(pRectArray, (void**)&pData))) {
+                                long ub;
+                                SafeArrayGetUBound(pRectArray, 1, &ub);
+                                if (ub >= 3) { // [x, y, w, h]
+                                    pt.x = (LONG)pData[0];
+                                    pt.y = (LONG)(pData[1] + pData[3]); // 光标底部
+                                    found = true;
+                                }
+                                SafeArrayUnaccessData(pRectArray);
+                            }
+                            SafeArrayDestroy(pRectArray);
+                        }
+                        pCaret->Release();
+                    }
+                    pText2->Release();
+                }
+
+                // 1b. 备选: TextPattern GetSelection
+                if (!found) {
+                    IUIAutomationTextPattern* pText = nullptr;
+                    hr = pFocused->GetCurrentPatternAs(UIA_TextPatternId,
+                        IID_PPV_ARGS(&pText));
+                    if (SUCCEEDED(hr) && pText) {
+                        IUIAutomationTextRangeArray* pSelection = nullptr;
+                        if (SUCCEEDED(pText->GetSelection(&pSelection)) && pSelection) {
+                            IUIAutomationTextRange* pRange = nullptr;
+                            if (SUCCEEDED(pSelection->GetElement(0, &pRange)) && pRange) {
+                                SAFEARRAY* pRectArray = nullptr;
+                                if (SUCCEEDED(pRange->GetBoundingRectangles(&pRectArray)) && pRectArray) {
+                                    double* pData = nullptr;
+                                    if (SUCCEEDED(SafeArrayAccessData(pRectArray, (void**)&pData))) {
+                                        long ub;
+                                        SafeArrayGetUBound(pRectArray, 1, &ub);
+                                        if (ub >= 3) {
+                                            pt.x = (LONG)pData[0];
+                                            pt.y = (LONG)(pData[1] + pData[3]);
+                                            found = true;
+                                        }
+                                        SafeArrayUnaccessData(pRectArray);
+                                    }
+                                    SafeArrayDestroy(pRectArray);
+                                }
+                                pRange->Release();
+                            }
+                            pSelection->Release();
+                        }
+                        pText->Release();
+                    }
+                }
+
+                // 1c. 兜底: 焦点控件自身边界框
+                if (!found) {
+                    RECT rc = {};
+                    if (SUCCEEDED(pFocused->get_CurrentBoundingRectangle(&rc)) &&
+                        (rc.right > rc.left || rc.bottom > rc.top)) {
+                        pt.x = rc.left;
+                        pt.y = rc.bottom + 4;
                         found = true;
                     }
                 }
-                
-                // 2. MSAA 光标 (适用于 Chrome, VS Code, 新版记事本等现代应用)
-                if (!found && gti.hwndFocus) {
-                    IAccessible* pAcc = nullptr;
-                    HRESULT hr = AccessibleObjectFromWindow(gti.hwndFocus, OBJID_CARET, IID_IAccessible, (void**)&pAcc);
-                    if (SUCCEEDED(hr) && pAcc) {
-                        long x = 0, y = 0, cx = 0, cy = 0;
-                        VARIANT vt;
-                        vt.vt = VT_I4;
-                        vt.lVal = CHILDID_SELF;
-                        if (pAcc->accLocation(&x, &y, &cx, &cy, vt) == S_OK) {
-                            pt.x = x;
-                            pt.y = y + cy; // 定位到光标底部
+                pFocused->Release();
+            }
+            pUIA->Release();
+        }
+
+        // === 2. Win32 / MSAA / IME / 窗口 降级链 ===
+        if (!found) {
+            HWND hForeground = GetForegroundWindow();
+            if (hForeground) {
+                DWORD tid = GetWindowThreadProcessId(hForeground, nullptr);
+                GUITHREADINFO gti = {};
+                gti.cbSize = sizeof(gti);
+
+                if (GetGUIThreadInfo(tid, &gti)) {
+                    // 2a. Win32 标准光标
+                    if (gti.hwndCaret && (gti.rcCaret.right > 0 || gti.rcCaret.bottom > 0)) {
+                        POINT caretPt = {gti.rcCaret.left, gti.rcCaret.bottom};
+                        if (ClientToScreen(gti.hwndCaret, &caretPt)) {
+                            pt = caretPt;
                             found = true;
                         }
-                        pAcc->Release();
+                    }
+
+                    // 2b. MSAA 文本光标
+                    if (!found && gti.hwndFocus) {
+                        IAccessible* pAcc = nullptr;
+                        HRESULT hr2 = AccessibleObjectFromWindow(gti.hwndFocus,
+                            OBJID_CARET, IID_IAccessible, (void**)&pAcc);
+                        if (SUCCEEDED(hr2) && pAcc) {
+                            long x = 0, y = 0, cx = 0, cy = 0;
+                            VARIANT vt; vt.vt = VT_I4; vt.lVal = CHILDID_SELF;
+                            if (pAcc->accLocation(&x, &y, &cx, &cy, vt) == S_OK && (cx > 0 || cy > 0)) {
+                                pt.x = x;
+                                pt.y = y + cy;
+                                found = true;
+                            }
+                            pAcc->Release();
+                        }
+                    }
+
+                    // 2c. MSAA 焦点控件位置
+                    if (!found && gti.hwndFocus) {
+                        IAccessible* pAcc = nullptr;
+                        HRESULT hr2 = AccessibleObjectFromWindow(gti.hwndFocus,
+                            OBJID_CLIENT, IID_IAccessible, (void**)&pAcc);
+                        if (FAILED(hr2) || !pAcc) {
+                            hr2 = AccessibleObjectFromWindow(gti.hwndFocus,
+                                OBJID_WINDOW, IID_IAccessible, (void**)&pAcc);
+                        }
+                        if (SUCCEEDED(hr2) && pAcc) {
+                            long x = 0, y = 0, cx = 0, cy = 0;
+                            VARIANT vt; vt.vt = VT_I4; vt.lVal = CHILDID_SELF;
+                            if (pAcc->accLocation(&x, &y, &cx, &cy, vt) == S_OK && (cx > 0 || cy > 0)) {
+                                pt.x = x;
+                                pt.y = y + cy + 4;
+                                found = true;
+                            }
+                            pAcc->Release();
+                        }
                     }
                 }
-            }
-            
-            // 3. IME 组合窗口位置 (部分中文应用支持)
-            if (!found) {
-                HIMC hIMC = ImmGetContext(hForeground);
-                if (hIMC) {
-                    COMPOSITIONFORM cf = {};
-                    if (ImmGetCompositionWindow(hIMC, &cf)) {
-                        POINT imePt = {cf.ptCurrentPos.x, cf.ptCurrentPos.y};
-                        if (ClientToScreen(hForeground, &imePt)) {
-                            pt = imePt;
-                            pt.y += 20; // 行高偏移
-                            found = true;
+
+                // 3. IME 组合窗口
+                if (!found) {
+                    HIMC hIMC = ImmGetContext(hForeground);
+                    if (hIMC) {
+                        COMPOSITIONFORM cf = {};
+                        if (ImmGetCompositionWindow(hIMC, &cf)) {
+                            POINT imePt = {cf.ptCurrentPos.x, cf.ptCurrentPos.y};
+                            if (ClientToScreen(hForeground, &imePt)) {
+                                pt = imePt;
+                                pt.y += 20;
+                                found = true;
+                            }
                         }
+                        ImmReleaseContext(hForeground, hIMC);
                     }
-                    ImmReleaseContext(hForeground, hIMC);
+                }
+
+                // 4. 前台窗口左下区域 (离焦点最近的位置决不是鼠标)
+                if (!found) {
+                    RECT fgRect;
+                    if (GetWindowRect(hForeground, &fgRect)) {
+                        pt.x = fgRect.left + 40;
+                        pt.y = fgRect.bottom - 60;
+                        found = true;
+                    }
                 }
             }
         }
 
-        // 4. 鼠标位置 (最终降级)
+        // 5. 屏幕工作区 (最终保底)
         if (!found) {
-            GetCursorPos(&pt);
+            RECT screen;
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
+            pt.x = screen.left + 200;
+            pt.y = screen.bottom - 120;
         }
 
         return pt;
@@ -398,12 +750,19 @@ public:
             width += sz.cx;
         }
 
-        std::wstring wpage = utf8ToWide(" -/=翻页");
+        std::wstring wpage = utf8ToWide(" -/=/PgUp/PgDn翻页  ⚙");
         GetTextExtentPoint32W(hdc, wpage.c_str(), (int)wpage.size(), &sz);
         width += sz.cx + 20;
         ReleaseDC(m_hwnd, hdc);
 
-        if (width > 600) width = 600;
+        if (width > 800) width = 800;
+
+        // 竖排模式: 每个候选一行
+        int height = 30;
+        if (g_settings.verticalLayout && !candidates.empty()) {
+            width = 250;
+            height = 6 + (int)candidates.size() * 24 + 20;
+        }
 
         // 定位：光标下方
         int x = pt.x;
@@ -412,9 +771,9 @@ public:
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
         if (x + width > screen.right) x = screen.right - width;
         if (x < screen.left) x = screen.left;
-        if (y + 30 > screen.bottom) y = pt.y - 35;
+        if (y + height > screen.bottom) y = pt.y - height - 5;
 
-        SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, 30, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         m_visible = true;
         InvalidateRect(m_hwnd, nullptr, TRUE);
     }
@@ -424,22 +783,6 @@ public:
             ShowWindow(m_hwnd, SW_HIDE);
             m_visible = false;
         }
-    }
-
-    static std::wstring utf8ToWide(const std::string& s) {
-        if (s.empty()) return L"";
-        // 尝试用 UTF-8 解码，如果包含无效字符则失败并回退到 ANSI (GBK)
-        int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.c_str(), -1, nullptr, 0);
-        UINT codePage = CP_UTF8;
-        if (len <= 0) {
-            // 回退到系统默认 ANSI 页 (如 GBK)
-            codePage = CP_ACP;
-            len = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
-        }
-        if (len <= 0) return L"";
-        std::wstring result(len - 1, 0);
-        MultiByteToWideChar(codePage, 0, s.c_str(), -1, &result[0], len);
-        return result;
     }
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -452,12 +795,12 @@ public:
                 GetClientRect(hwnd, &rc);
 
                 // 背景
-                HBRUSH hBrush = CreateSolidBrush(BG_COLOR);
+                HBRUSH hBrush = CreateSolidBrush(self->getBgColor());
                 FillRect(hdc, &rc, hBrush);
                 DeleteObject(hBrush);
 
                 // 边框
-                HPEN hPen = CreatePen(PS_SOLID, 1, BORDER_COLOR);
+                HPEN hPen = CreatePen(PS_SOLID, 1, self->getBorderColor());
                 HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
                 Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
                 SelectObject(hdc, oldPen);
@@ -468,7 +811,7 @@ public:
                 int x = 8;
 
                 // 拼音缓冲区
-                SetTextColor(hdc, INPUT_COLOR);
+                SetTextColor(hdc, self->getInputColor());
                 std::wstring wpinyin = utf8ToWide("[" + g_engine->m_buffer + "] ");
                 TextOutW(hdc, x, 6, wpinyin.c_str(), (int)wpinyin.size());
                 SIZE sz;
@@ -478,13 +821,13 @@ public:
                 // 候选列表
                 auto candidates = g_engine->getPageCandidates();
                 for (int i = 0; i < (int)candidates.size(); i++) {
-                    SetTextColor(hdc, INDEX_COLOR);
+                    SetTextColor(hdc, self->getIndexColor());
                     std::wstring widx = std::to_wstring(i + 1) + L".";
                     TextOutW(hdc, x, 6, widx.c_str(), (int)widx.size());
                     GetTextExtentPoint32W(hdc, widx.c_str(), (int)widx.size(), &sz);
                     x += sz.cx;
 
-                    SetTextColor(hdc, TEXT_COLOR);
+                    SetTextColor(hdc, self->getTextColor());
                     std::wstring wtext = utf8ToWide(candidates[i].first);
                     TextOutW(hdc, x, 6, wtext.c_str(), (int)wtext.size());
                     GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz);
@@ -492,16 +835,96 @@ public:
                 }
 
                 SetTextColor(hdc, RGB(150, 150, 150));
-                std::wstring wpage = L" -/=翻页";
+                std::wstring wpage = L" -/=/PgUp/PgDn翻页";
                 TextOutW(hdc, x, 6, wpage.c_str(), (int)wpage.size());
+                GetTextExtentPoint32W(hdc, wpage.c_str(), (int)wpage.size(), &sz);
+                x += sz.cx + 4;
+
+                // 设置按钮 "⚙"
+                SetTextColor(hdc, RGB(80, 80, 200));
+                std::wstring wgear = L"⚙";
+                TextOutW(hdc, x, 6, wgear.c_str(), (int)wgear.size());
+                SIZE gearSz;
+                GetTextExtentPoint32W(hdc, wgear.c_str(), (int)wgear.size(), &gearSz);
+                self->m_settingsBtnRect = {x, 4, x + gearSz.cx + 4, 4 + gearSz.cy + 4};
 
                 EndPaint(hwnd, &ps);
+            }
+            return 0;
+        }
+        if (msg == WM_LBUTTONDOWN) {
+            CandidateWindow* self = (CandidateWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if (self) {
+                POINT pt = {LOWORD(lp), HIWORD(lp)};
+                if (PtInRect(&self->m_settingsBtnRect, pt)) {
+                    PostMessage(g_hWnd, WM_OPEN_SETTINGS, 0, 0);
+                }
             }
             return 0;
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 };
+
+// ==================== 设置系统接口实现 ====================
+// (这些函数在 PinyinEngine/CandidateWindow 完整定义之后实现)
+
+void openSettingsWindow(HINSTANCE hInst, HWND hParent) {
+    SettingsWindow::show(hInst, hParent);
+}
+
+// 用户词典操作 (由 settings.h 中的 UserDictDialog 调用)
+void userDictAddEntry(const std::string& pinyin, const std::string& word, int freq) {
+    if (g_engine) {
+        g_engine->m_userDict[pinyin].push_back({word, freq});
+        g_engine->saveUserDict();
+    }
+}
+
+void userDictRemoveEntry(const std::string& pinyin, const std::string& word) {
+    if (!g_engine) return;
+    auto it = g_engine->m_userDict.find(pinyin);
+    if (it != g_engine->m_userDict.end()) {
+        auto& vec = it->second;
+        vec.erase(std::remove_if(vec.begin(), vec.end(),
+            [&word](const auto& p){ return p.first == word; }), vec.end());
+        if (vec.empty()) g_engine->m_userDict.erase(it);
+    }
+    g_engine->saveUserDict();
+}
+
+void userDictClearAll() {
+    if (g_engine) {
+        g_engine->m_userDict.clear();
+        g_engine->saveUserDict();
+    }
+}
+
+std::string userDictGetAllAsString() {
+    if (!g_engine) return "";
+    std::string result;
+    for (auto& kv : g_engine->m_userDict) {
+        for (auto& p : kv.second) {
+            result += kv.first + "\t" + p.first + "\t" + std::to_string(p.second) + "\n";
+        }
+    }
+    return result;
+}
+
+void userDictSaveToFile() {
+    if (g_engine) g_engine->saveUserDict();
+}
+
+void applySettingsToEngine(const PinyinSettings& s) {
+    if (g_candidateWin) {
+        if (g_candidateWin->m_font) DeleteObject(g_candidateWin->m_font);
+        g_candidateWin->m_font = CreateFontW(
+            -s.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
+            L"Microsoft YaHei");
+    }
+}
 
 // ==================== 键盘钩子 ====================
 static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -564,7 +987,7 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 std::string text = g_engine->selectCandidate(idx);
                 if (!text.empty()) {
                     g_candidateWin->hide();
-                    requestInject(CandidateWindow::utf8ToWide(text));
+                    requestInject(utf8ToWide(text));
                 }
                 return 1;
             }
@@ -574,7 +997,7 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 std::string text = g_engine->selectCandidate(0);
                 if (!text.empty()) {
                     g_candidateWin->hide();
-                    requestInject(CandidateWindow::utf8ToWide(text));
+                    requestInject(utf8ToWide(text));
                 }
                 return 1;
             }
@@ -584,8 +1007,8 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 return CallNextHookEx(g_hHook, nCode, wParam, lParam);
             }
 
-            // 减号: 上一页
-            if (vk == VK_OEM_MINUS) {
+            // 减号 / PageUp: 上一页
+            if (vk == VK_OEM_MINUS || vk == VK_PRIOR) {
                 if (!g_engine->m_candidates.empty()) {
                     g_engine->prevPage();
                     g_candidateWin->show(g_engine->m_buffer,
@@ -594,8 +1017,8 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 等号: 下一页
-            if (vk == VK_OEM_PLUS) {
+            // 等号 / PageDown: 下一页
+            if (vk == VK_OEM_PLUS || vk == VK_NEXT) {
                 if (!g_engine->m_candidates.empty()) {
                     g_engine->nextPage();
                     g_candidateWin->show(g_engine->m_buffer,
@@ -618,7 +1041,7 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 std::string text = g_engine->selectCandidate(0);
                 if (!text.empty()) {
                     g_candidateWin->hide();
-                    requestInject(CandidateWindow::utf8ToWide(text));
+                    requestInject(utf8ToWide(text));
                 }
                 // 延迟传递当前键（等注入完成后再发）
                 // 简化：直接传递，注入通过 PostMessage 异步执行
@@ -651,6 +1074,34 @@ static LRESULT CALLBACK mainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    case WM_TRAYICON: {
+        if (wp == 1 && lp == WM_RBUTTONUP) {
+            // 托盘右键菜单
+            POINT pt;
+            GetCursorPos(&pt);
+            HMENU hMenu = CreatePopupMenu();
+            AppendMenuW(hMenu, MF_STRING, 1, L"⚙ 设置");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(hMenu, MF_STRING, 2, L"❌ 退出");
+            SetForegroundWindow(hwnd); // 确保菜单能正确关闭
+            int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY,
+                pt.x, pt.y, 0, hwnd, nullptr);
+            DestroyMenu(hMenu);
+            if (cmd == 1) {
+                PostMessage(hwnd, WM_OPEN_SETTINGS, 0, 0);
+            } else if (cmd == 2) {
+                PostQuitMessage(0);
+            }
+        } else if (wp == 1 && lp == WM_LBUTTONDBLCLK) {
+            // 双击托盘图标打开设置
+            PostMessage(hwnd, WM_OPEN_SETTINGS, 0, 0);
+        }
+        return 0;
+    }
+    case WM_OPEN_SETTINGS: {
+        openSettingsWindow(g_hInst, hwnd);
+        return 0;
+    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -663,6 +1114,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_hInst = hInstance;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     InitializeCriticalSection(&g_pendingLock);
+
+    // 初始化 Common Controls (用于设置窗口)
+    INITCOMMONCONTROLSEX icex = {};
+    icex.dwSize = sizeof(icex);
+    icex.dwICC = ICC_STANDARD_CLASSES | ICC_TAB_CLASSES;
+    InitCommonControlsEx(&icex);
+
+    // 加载设置
+    g_settings.loadFromFile("pinyin_config.ini");
 
     // 初始化拼音引擎
     g_engine = new PinyinEngine();
@@ -683,10 +1143,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_hWnd = CreateWindowExW(0, L"PinyinIMEMain", L"PinyinIME",
         0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInstance, nullptr);
 
+    // 创建托盘图标
+    g_trayIcon.cbSize = sizeof(NOTIFYICONDATAW);
+    g_trayIcon.hWnd = g_hWnd;
+    g_trayIcon.uID = 1;
+    g_trayIcon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_trayIcon.uCallbackMessage = WM_TRAYICON;
+    g_trayIcon.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wcscpy_s(g_trayIcon.szTip, L"PinyinIME 拼音输入法");
+    Shell_NotifyIconW(NIM_ADD, &g_trayIcon);
+
     // 安装全局键盘钩子
     g_hHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardProc, hInstance, 0);
     if (!g_hHook) {
         MessageBoxW(nullptr, L"无法安装键盘钩子！", L"错误", MB_ICONERROR);
+        Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
         CoUninitialize();
         return 1;
     }
@@ -700,6 +1171,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     // 清理
     if (g_hHook) UnhookWindowsHookEx(g_hHook);
+    Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
     g_engine->saveUserDict();
     g_candidateWin->destroy();
     delete g_candidateWin;

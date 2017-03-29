@@ -15,7 +15,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [1/2] Compiling...
-cl.exe /utf-8 /O2 /MT /EHsc /DUNICODE /D_UNICODE main.cpp /Fe:PinyinIME.exe user32.lib gdi32.lib kernel32.lib imm32.lib
+cl.exe /utf-8 /O2 /MT /EHsc /std:c++17 /DUNICODE /D_UNICODE main.cpp /Fe:PinyinIME.exe user32.lib gdi32.lib kernel32.lib imm32.lib comctl32.lib shell32.lib oleacc.lib Ole32.lib OleAut32.lib UIAutomationCore.lib
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
