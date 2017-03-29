@@ -470,7 +470,7 @@ struct SettingsDialog {
 
                 // 应用设置
                 g_settings = g_tempSettings;
-                g_settings.saveToFile("pinyin_config.ini");
+                g_settings.saveToFile(getExeDirectory() + "pinyin_config.ini");
                 applySettingsToEngine(g_settings);
 
                 EndDialog(hDlg, 1);
@@ -805,7 +805,7 @@ struct SettingsWindow {
 
                 // 应用到全局设置
                 g_settings = self->m_temp;
-                g_settings.saveToFile("pinyin_config.ini");
+                g_settings.saveToFile(getExeDirectory() + "pinyin_config.ini");
                 applySettingsToEngine(g_settings);
 
                 DestroyWindow(hwnd);

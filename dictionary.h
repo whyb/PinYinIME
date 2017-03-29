@@ -13,20 +13,20 @@
 #include <fstream>
 #include <sstream>
 
+// 获取 exe 所在的文件夹路径（带末尾反斜杠）
+inline std::string getExeDirectory() {
+    char path[MAX_PATH] = { 0 };
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string exePath(path);
+    size_t pos = exePath.find_last_of("\\/");
+    if (pos != std::string::npos) {
+        return exePath.substr(0, pos + 1);
+    }
+    return "";
+}
+
 struct PinyinDict {
     std::unordered_map<std::string, std::vector<std::pair<std::string, int>>> entries;
-
-    // 获取 exe 所在的文件夹路径（带末尾反斜杠）
-    std::string getExeDirectory() {
-        char path[MAX_PATH] = { 0 };
-        GetModuleFileNameA(nullptr, path, MAX_PATH);
-        std::string exePath(path);
-        size_t pos = exePath.find_last_of("\\/");
-        if (pos != std::string::npos) {
-            return exePath.substr(0, pos + 1);
-        }
-        return "";
-    }
 
     // 从 TSV 文本文件加载词库条目
     bool loadFromFile(const std::string& filename) {

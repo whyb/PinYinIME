@@ -93,7 +93,11 @@ public:
     std::string m_buffer;                // 当前拼音缓冲区
     std::vector<std::pair<std::string,int>> m_candidates; // 当前候选列表
     int m_pageIndex = 0;                 // 当前页码
-    static const int PAGE_SIZE = 5;      // 每页候选数
+
+    int getPageSize() const {
+        int cnt = g_settings.candidateCount;
+        return (cnt >= 3 && cnt <= 9) ? cnt : 5;
+    }
 
     void init() {
         m_dict.init();
@@ -102,7 +106,7 @@ public:
 
     // 加载用户自学习词库
     void loadUserDict() {
-        std::ifstream fin("user.dict");
+        std::ifstream fin(getExeDirectory() + "user.dict");
         if (!fin.is_open()) return;
         std::string line;
         while (std::getline(fin, line)) {
@@ -124,7 +128,7 @@ public:
 
     // 保存用户自学习词库
     void saveUserDict() {
-        std::ofstream fout("user.dict");
+        std::ofstream fout(getExeDirectory() + "user.dict");
         if (!fout.is_open()) return;
         fout << "# PinyinIME user dictionary - auto-generated\n";
         for (auto& kv : m_userDict) {
@@ -383,7 +387,7 @@ public:
                 kv.first.substr(0, m_buffer.size()) == m_buffer) {
                 for (auto& p : kv.second) {
                     if (merged.find(p.first) == merged.end()) {
-                        merged[p.first] = p.second - 100;
+                        merged[p.first] = p.second - 400;  // 前缀匹配权重惩罚: 让精确匹配优先
                     }
                 }
             }
@@ -411,7 +415,7 @@ public:
                 auto combined = genCombinedCandidates(segs);
                 for (auto& c : combined) {
                     if (merged.find(c.first) == merged.end()) {
-                        merged[c.first] = c.second - 150; // 略低于精确匹配
+                        merged[c.first] = c.second - 300; // 分词组合略低于精确匹配
                     } else {
                         merged[c.first] = (std::max)(merged[c.first], c.second);
                     }
@@ -449,15 +453,17 @@ public:
 
     std::vector<std::pair<std::string,int>> getPageCandidates() {
         std::vector<std::pair<std::string,int>> result;
-        int start = m_pageIndex * PAGE_SIZE;
-        for (int i = start; i < start + PAGE_SIZE && i < (int)m_candidates.size(); i++) {
+        int pageSize = getPageSize();
+        int start = m_pageIndex * pageSize;
+        for (int i = start; i < start + pageSize && i < (int)m_candidates.size(); i++) {
             result.push_back(m_candidates[i]);
         }
         return result;
     }
 
     void nextPage() {
-        int maxPage = ((int)m_candidates.size() + PAGE_SIZE - 1) / PAGE_SIZE - 1;
+        int pageSize = getPageSize();
+        int maxPage = ((int)m_candidates.size() + pageSize - 1) / pageSize - 1;
         if (maxPage < 0) maxPage = 0;
         if (m_pageIndex < maxPage) m_pageIndex++;
     }
@@ -468,7 +474,7 @@ public:
 
     // 选择候选（自学习）
     std::string selectCandidate(int index) {
-        int globalIdx = m_pageIndex * PAGE_SIZE + index;
+        int globalIdx = m_pageIndex * getPageSize() + index;
         if (globalIdx < 0 || globalIdx >= (int)m_candidates.size()) return "";
         auto& selected = m_candidates[globalIdx];
 
@@ -917,12 +923,20 @@ void userDictSaveToFile() {
 
 void applySettingsToEngine(const PinyinSettings& s) {
     if (g_candidateWin) {
+        // 1. 更新字体（字号可能改变）
         if (g_candidateWin->m_font) DeleteObject(g_candidateWin->m_font);
         g_candidateWin->m_font = CreateFontW(
             -s.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
             L"Microsoft YaHei");
+
+        // 2. 如果候选框正在显示，立即刷新以反映新设置
+        //    (颜色/字体/竖排布局/候选数量等)
+        if (g_candidateWin->m_visible && g_engine && !g_engine->m_buffer.empty()) {
+            g_candidateWin->show(g_engine->m_buffer,
+                g_engine->getPageCandidates(), g_engine->m_pageIndex);
+        }
     }
 }
 
@@ -1121,8 +1135,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     icex.dwICC = ICC_STANDARD_CLASSES | ICC_TAB_CLASSES;
     InitCommonControlsEx(&icex);
 
-    // 加载设置
-    g_settings.loadFromFile("pinyin_config.ini");
+    // 加载设置 (使用 exe 所在目录，保证设置文件始终与程序在同一位置)
+    g_settings.loadFromFile(getExeDirectory() + "pinyin_config.ini");
 
     // 初始化拼音引擎
     g_engine = new PinyinEngine();
