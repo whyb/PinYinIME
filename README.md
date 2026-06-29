@@ -28,7 +28,7 @@
 ### 🎯 核心输入
 - **全拼 / 简拼**: 支持完整拼音和首字母缩写（`nh` → 你好）
 - **DP 拼音分割**: 输入长串拼音自动拆成词组（`haiyoumeiyou` → 还有没有）
-- **内置词库**: 410 个标准拼音音节，900+ 词条（单字 + 词组 + 简拼）
+- **内置词库**: 基于 [rime-ice](https://github.com/iDvel/rime-ice) 词典，46,000+ 单字，540,000+ 词组，480,000+ 简拼
 - **用户词库**: 自学习，自动记录选词频率，越用越顺手
 - **词频动态调整**: 每次选择自动 +1 频率，下次优先显示
 
@@ -106,10 +106,11 @@ build.bat
 | `main.cpp` | ~1180 | 主程序：键盘钩子、拼音引擎、候选窗口、文本注入、UIA 光标检测、拼音分割 |
 | `settings.h` | ~870 | 设置系统：设置窗口 UI、皮肤管理、用户词典对话框 |
 | `s2t_data.h` | ~810 | 简繁转换：2000+ 字符映射 + 词汇消歧 + 两岸 IT 术语 |
-| `dictionary.h` | ~80 | 内嵌词库：单字 + 词组 + 简拼 |
+| `dictionary.h` | ~80 | 词库加载器：从 TSV 文件加载单字 + 词组 + 简拼 |
 | `CMakeLists.txt` | ~85 | CMake 构建脚本 |
 | `build.bat` | ~40 | 一键编译脚本 |
-| `generate_dicts.py` | - | Python 词典生成脚本 |
+| `convert_rime_dicts.py` | - | Python 词典转换脚本：从 rime-ice 词库生成 PinyinIME 格式 |
+| `rime-ice/` | - | [rime-ice](https://github.com/iDvel/rime-ice) 词库（git submodule） |
 | `user.dict` | - | 用户自学习词库（运行时自动生成） |
 
 ---

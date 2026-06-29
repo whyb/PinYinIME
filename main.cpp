@@ -380,34 +380,11 @@ public:
             }
         }
 
-        // 2. 前缀匹配（buffer 是 key 的前缀）
-        for (auto& kv : m_dict.entries) {
-            if (kv.first == m_buffer) continue;
-            if (kv.first.size() >= m_buffer.size() &&
-                kv.first.substr(0, m_buffer.size()) == m_buffer) {
-                for (auto& p : kv.second) {
-                    if (merged.find(p.first) == merged.end()) {
-                        merged[p.first] = p.second - 400;  // 前缀匹配权重惩罚: 让精确匹配优先
-                    }
-                }
-            }
-        }
+        // 2. 首字母简拼匹配 — 使用 short_pinyin 词典
+        //    short_pinyin.txt 已经包含了丰富的简拼映射，直接通过精确匹配查找即可
+        //    不再遍历全部词库做前缀/首字母匹配，避免大词库下的 O(n) 性能问题
 
-        // 3. 首字母简拼匹配
-        for (auto& kv : m_dict.entries) {
-            if (kv.first == m_buffer) continue;
-            if (kv.first.size() <= m_buffer.size()) continue;
-            std::string initials = extractInitials(kv.first);
-            if (initials == m_buffer) {
-                for (auto& p : kv.second) {
-                    if (merged.find(p.first) == merged.end()) {
-                        merged[p.first] = p.second - 200;
-                    }
-                }
-            }
-        }
-
-        // 4. 拼音分词组合匹配 (自动将长拼音切分为多词组合)
+        // 3. 拼音分词组合匹配 (自动将长拼音切分为多词组合)
         //    例如 "haiyoumeiyou" → hai+you+meiyou → "还有没有"
         if (m_buffer.size() >= 3) {
             auto segs = segmentPinyin(m_buffer);
@@ -429,26 +406,6 @@ public:
         }
         std::sort(m_candidates.begin(), m_candidates.end(),
             [](const auto& a, const auto& b){ return a.second > b.second; });
-    }
-
-    // 提取拼音首字母序列（简化版）
-    std::string extractInitials(const std::string& pinyin) {
-        std::string result;
-        if (pinyin.empty()) return result;
-        result += pinyin[0];
-        for (size_t i = 1; i < pinyin.size(); i++) {
-            char c = pinyin[i];
-            char prev = pinyin[i-1];
-            bool isConsonant = (c != 'a' && c != 'e' && c != 'i' && c != 'o' && c != 'u' && c != 'v');
-            bool prevIsVowel = (prev == 'a' || prev == 'e' || prev == 'i' || prev == 'o' || prev == 'u' || prev == 'v');
-            if (isConsonant && prevIsVowel) {
-                result += c;
-            }
-            if ((c == 'h' && (prev == 'z' || prev == 'c' || prev == 's')) && result.size() > 1) {
-                result.back() = c;
-            }
-        }
-        return result;
     }
 
     std::vector<std::pair<std::string,int>> getPageCandidates() {

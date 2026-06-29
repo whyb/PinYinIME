@@ -1,0 +1,149 @@
+name: Build and Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write  # needed for creating releases
+
+jobs:
+  build-windows-x64:
+    name: Windows x64
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. Checkout with submodules ──────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # ── 2. Setup Python & convert rime-ice dictionaries ──────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Convert rime-ice dictionaries
+        run: python convert_rime_dicts.py
+
+      # ── 3. Create default runtime files ───────────────────────
+      - name: Create default config & user dict
+        run: |
+          @"
+          # PinyinIME Settings
+          useTraditional=0
+          bgColor=15724527
+          borderColor=11842740
+          textColor=3289650
+          indexColor=13107200
+          inputColor=13107200
+          fontSize=18
+          candidateCount=5
+          verticalLayout=0
+          fuzzyZ_Zh=0
+          fuzzyC_Ch=0
+          fuzzyS_Sh=0
+          fuzzyN_L=0
+          fuzzyF_H=0
+          fuzzyEn_Eng=0
+          fuzzyIn_Ing=0
+          smartCorrection=1
+          autoWordCreate=1
+          autoFreqAdjust=1
+          chinesePunctuation=1
+          toggleHotkey=161
+          "@ | Out-File -FilePath pinyin_config.ini -Encoding utf8
+
+          "# PinyinIME User Dictionary" | Out-File -FilePath user.dict -Encoding utf8
+
+      # ── 4. Configure CMake (VS 2022, x64, Release) ───────────
+      - name: Configure CMake
+        run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      # ── 5. Build ─────────────────────────────────────────────
+      - name: Build
+        run: cmake --build build --config Release
+
+      # ── 6. List build output ─────────────────────────────────
+      - name: Verify build output
+        run: |
+          echo "=== Build output ==="
+          Get-ChildItem build/Release/
+          echo ""
+          echo "=== Dictionary files ==="
+          Get-ChildItem single_chars.txt, words.txt, short_pinyin.txt
+          echo ""
+          $exeSize = (Get-Item build/Release/PinyinIME.exe).Length / 1KB
+          Write-Host "PinyinIME.exe size: $([math]::Round($exeSize, 1)) KB"
+
+      # ── 7. Stage and package ─────────────────────────────────
+      - name: Create ZIP package
+        run: |
+          $staging = "staging\PinyinIME"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          Copy-Item build\Release\PinyinIME.exe -Destination $staging\
+          Copy-Item single_chars.txt -Destination $staging\
+          Copy-Item words.txt -Destination $staging\
+          Copy-Item short_pinyin.txt -Destination $staging\
+          Copy-Item pinyin_config.ini -Destination $staging\
+          Copy-Item user.dict -Destination $staging\
+
+          Write-Host "=== Staged files ==="
+          Get-ChildItem $staging | ForEach-Object {
+              $sizeKB = [math]::Round($_.Length / 1KB, 1)
+              Write-Host "  $($_.Name) ($sizeKB KB)"
+          }
+
+          Compress-Archive -Path "$staging\*" -DestinationPath PinyinIME-windows-x64.zip -Force
+
+          $zipSize = [math]::Round((Get-Item PinyinIME-windows-x64.zip).Length / 1MB, 1)
+          Write-Host "ZIP created: PinyinIME-windows-x64.zip ($zipSize MB)"
+
+      # ── 8a. Upload artifact (all pushes) ─────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PinyinIME-windows-x64
+          path: PinyinIME-windows-x64.zip
+          retention-days: 30
+
+      # ── 8b. Create draft release (tags only) ─────────────────
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: PinyinIME-windows-x64.zip
+          body: |
+            ## 📦 PinyinIME ${{ github.ref_name }}
+
+            极简拼音输入法 — 基于 [rime-ice](https://github.com/iDvel/rime-ice) 词库。
+
+            ### 使用方法
+            1. 解压 `PinyinIME-windows-x64.zip`
+            2. 以**管理员身份**运行 `PinyinIME.exe`（全局键盘钩子需要）
+            3. 按 **右 Shift** 切换中英文模式
+            4. 中文模式下输入拼音：**空格**确认，**数字 1-9** 选词
+
+            ### 包含文件
+            | 文件 | 说明 |
+            |---|---|
+            | `PinyinIME.exe` | 主程序 (x64, 静态链接 CRT) |
+            | `single_chars.txt` | 单字词库 (~4.6 万条) |
+            | `words.txt` | 词组词库 (~54 万条) |
+            | `short_pinyin.txt` | 简拼词库 (~48 万条) |
+            | `pinyin_config.ini` | 默认配置文件 |
+            | `user.dict` | 用户自学习词库 |
+
+            ### 词库
+            词典数据来自 [rime-ice](https://github.com/iDvel/rime-ice)，覆盖 8105 通用规范汉字 + 54 万常用词组。
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -53,11 +53,11 @@ install(FILES
 )
 
 # ==================== 自定义目标 ====================
-# 重新生成词典 (需要 Python 3)
+# 重新生成词典 (需要 Python 3, 需要先拉取 rime-ice submodule)
 add_custom_target(generate_dicts
-    COMMAND python generate_dicts.py
+    COMMAND python convert_rime_dicts.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Regenerating dictionary files (single_chars.txt / words.txt / short_pinyin.txt)"
+    COMMENT "Converting rime-ice dictionaries to PinyinIME format"
 )
 
 # ==================== 平台特定 ====================
