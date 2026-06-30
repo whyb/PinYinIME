@@ -61,22 +61,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
-      # ── 5. Verify static linking ─────────────────────────────
-      - name: Verify static CRT (/MT)
-        run: |
-          echo "=== Checking DLL dependencies ==="
-          dumpbin /dependents build\Release\PinyinIME.exe | findstr /i "vcruntime msvcp ucrt" || echo "  [OK] No VC runtime DLL dependencies - statically linked (/MT)"
-          echo ""
-          echo "=== Build output ==="
-          Get-ChildItem build/Release/
-          echo ""
-          echo "=== Dictionary files (cn_dicts/) ==="
-          Get-ChildItem build/Release/cn_dicts/
-          echo ""
-          $exeSize = (Get-Item build/Release/PinyinIME.exe).Length / 1KB
-          Write-Host "PinyinIME.exe size: $([math]::Round($exeSize, 1)) KB"
-
-      # ── 6. Stage and package ─────────────────────────────────
+      # ── 5. Stage and package ─────────────────────────────────
       - name: Create ZIP package
         run: |
           $staging = "staging\PinyinIME"
@@ -98,7 +83,7 @@ jobs:
           $zipSize = [math]::Round((Get-Item PinyinIME-windows-x64.zip).Length / 1MB, 1)
           Write-Host "ZIP created: PinyinIME-windows-x64.zip ($zipSize MB)"
 
-      # ── 7a. Upload artifact (all pushes) ─────────────────────
+      # ── 6a. Upload artifact (all pushes) ─────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -106,7 +91,7 @@ jobs:
           path: PinyinIME-windows-x64.zip
           retention-days: 30
 
-      # ── 7b. Create draft release (tags only) ─────────────────
+      # ── 6b. Create draft release (tags only) ─────────────────
       - name: Create draft release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
