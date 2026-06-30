@@ -491,6 +491,10 @@ public:
     HFONT m_font = nullptr;
     bool m_visible = false;
     RECT m_settingsBtnRect = {}; // 设置按钮点击区域
+    int m_textY = 6;            // 文本 Y 坐标 (根据字体度量动态计算)
+    int m_rowH = 24;            // 竖排模式每行高度 (根据字体度量动态计算)
+    HRGN m_roundRgn = nullptr;  // 圆角窗口区域
+    int m_roundR = 10;          // 圆角半径
 
     COLORREF getBgColor()     { return g_settings.bgColor; }
     COLORREF getBorderColor() { return g_settings.borderColor; }
@@ -503,7 +507,7 @@ public:
             -g_settings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
-            L"Microsoft YaHei");
+            g_settings.fontName.c_str());
 
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
@@ -525,6 +529,7 @@ public:
     }
 
     void destroy() {
+        if (m_roundRgn) { DeleteObject(m_roundRgn); m_roundRgn = nullptr; }
         if (m_font) { DeleteObject(m_font); m_font = nullptr; }
         if (m_hwnd) { DestroyWindow(m_hwnd); m_hwnd = nullptr; }
     }
@@ -726,6 +731,11 @@ public:
         // 计算窗口宽度
         HDC hdc = GetDC(m_hwnd);
         SelectObject(hdc, m_font);
+
+        // 从字体度量计算动态窗口高度和文本 Y 坐标
+        TEXTMETRICW tm;
+        GetTextMetrics(hdc, &tm);
+
         int width = 20;
         SIZE sz;
 
@@ -745,20 +755,40 @@ public:
         width += sz.cx + 20;
         ReleaseDC(m_hwnd, hdc);
 
-        if (width > 800) width = 800;
+        // 获取屏幕工作区 (用于限制宽度不超过屏幕)
+        RECT screen;
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
+        int maxWidth = (screen.right - screen.left) * 85 / 100;  // 不超过屏幕 85%
+        if (width > maxWidth) width = maxWidth;
 
-        // 竖排模式: 每个候选一行
-        int height = 30;
+        // 竖排模式: 拼音行 + 每个候选一行 + 翻页/齿轮行
+        int height;
+        int borderW = 3;  // 渐变边框宽度 (3 层 RoundRect → 软边缘效果)
+        m_roundR = (std::max)(6, (std::min)(16, (int)(tm.tmHeight * 2 / 3)));  // 圆角半径
+
         if (g_settings.verticalLayout && !candidates.empty()) {
-            width = 250;
-            height = 6 + (int)candidates.size() * 24 + 20;
+            if (250 > maxWidth) width = maxWidth;  // 竖排也不超出屏幕
+            m_rowH = tm.tmHeight + 6;   // 字符高度 + 行间距
+            m_textY = borderW + 4;      // 顶部边距
+            // 布局: [拼音] / 候选1 / 候选2 / ... / 翻页⚙
+            // 行数 = 1(拼音) + candidates + 1(翻页)
+            height = m_textY + ((int)candidates.size() + 2) * m_rowH + borderW + 6;
+        } else {
+            // 横排模式: 根据字体大小动态计算高度
+            int pad = (std::max)(4, (int)(tm.tmHeight / 8));
+            m_textY = borderW + pad;    // 边框 + 内边距 = 字符顶部
+            height = m_textY + tm.tmHeight + pad + borderW;
+            m_rowH = tm.tmHeight;
         }
+
+        // 创建圆角窗口区域 (裁剪尖锐边角)
+        if (m_roundRgn) { DeleteObject(m_roundRgn); m_roundRgn = nullptr; }
+        m_roundRgn = CreateRoundRectRgn(0, 0, width + 1, height + 1, m_roundR * 2, m_roundR * 2);
+        SetWindowRgn(m_hwnd, m_roundRgn, TRUE);
 
         // 定位：光标下方
         int x = pt.x;
         int y = pt.y + 5;
-        RECT screen;
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
         if (x + width > screen.right) x = screen.right - width;
         if (x < screen.left) x = screen.left;
         if (y + height > screen.bottom) y = pt.y - height - 5;
@@ -789,54 +819,95 @@ public:
                 FillRect(hdc, &rc, hBrush);
                 DeleteObject(hBrush);
 
-                // 边框
-                HPEN hPen = CreatePen(PS_SOLID, 1, self->getBorderColor());
-                HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
-                Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-                SelectObject(hdc, oldPen);
-                DeleteObject(hPen);
+                // 渐变圆角边框 (3 层 → 软边缘效果)
+                {
+                    COLORREF bc = self->getBorderColor();
+                    int rr = GetRValue(bc), rg = GetGValue(bc), rb = GetBValue(bc);
+                    int r = rc.right, b = rc.bottom;
+                    int cr = self->m_roundR;  // 圆角半径
+                    HBRUSH nullBr = (HBRUSH)GetStockObject(NULL_BRUSH);
+
+                    // 确定渐变方向: 暗色背景→外浅内深, 亮色背景→外深内浅
+                    COLORREF bg = self->getBgColor();
+                    int bgBright = (GetRValue(bg) * 299 + GetGValue(bg) * 587 + GetBValue(bg) * 114) / 1000;
+                    int dir = (bgBright < 128) ? 1 : -1;  // 1=外浅, -1=外深
+
+                    auto clampC = [](int v) -> int { return v < 0 ? 0 : (v > 255 ? 255 : v); };
+
+                    // 第 1 层: 最外层 (最浅/最深)
+                    HPEN p1 = CreatePen(PS_SOLID, 1, RGB(clampC(rr + 40 * dir), clampC(rg + 40 * dir), clampC(rb + 40 * dir)));
+                    SelectObject(hdc, p1); SelectObject(hdc, nullBr);
+                    RoundRect(hdc, 0, 0, r, b, cr * 2, cr * 2);
+
+                    // 第 2 层: 中间层
+                    HPEN p2 = CreatePen(PS_SOLID, 1, RGB(clampC(rr + 18 * dir), clampC(rg + 18 * dir), clampC(rb + 18 * dir)));
+                    SelectObject(hdc, p2); SelectObject(hdc, nullBr);
+                    RoundRect(hdc, 1, 1, r - 1, b - 1, (cr - 1) * 2, (cr - 1) * 2);
+
+                    // 第 3 层: 内层 (原始边框颜色)
+                    HPEN p3 = CreatePen(PS_SOLID, 1, bc);
+                    SelectObject(hdc, p3); SelectObject(hdc, nullBr);
+                    RoundRect(hdc, 2, 2, r - 2, b - 2, (cr - 2) * 2, (cr - 2) * 2);
+
+                    DeleteObject(p3); DeleteObject(p2); DeleteObject(p1);
+                }
 
                 SelectObject(hdc, self->m_font);
                 SetBkMode(hdc, TRANSPARENT);
                 int x = 8;
+                int y = self->m_textY;
 
                 // 拼音缓冲区
                 SetTextColor(hdc, self->getInputColor());
                 std::wstring wpinyin = utf8ToWide("[" + g_engine->m_buffer + "] ");
-                TextOutW(hdc, x, 6, wpinyin.c_str(), (int)wpinyin.size());
+                TextOutW(hdc, x, y, wpinyin.c_str(), (int)wpinyin.size());
                 SIZE sz;
                 GetTextExtentPoint32W(hdc, wpinyin.c_str(), (int)wpinyin.size(), &sz);
                 x += sz.cx + 5;
 
-                // 候选列表
+                // 候选列表 (竖排模式从拼音行下一行开始)
                 auto candidates = g_engine->getPageCandidates();
+                int candBaseY = g_settings.verticalLayout ? (y + self->m_rowH) : y;
                 for (int i = 0; i < (int)candidates.size(); i++) {
+                    int cy = g_settings.verticalLayout ? (candBaseY + i * self->m_rowH) : y;
+
                     SetTextColor(hdc, self->getIndexColor());
                     std::wstring widx = std::to_wstring(i + 1) + L".";
-                    TextOutW(hdc, x, 6, widx.c_str(), (int)widx.size());
+                    TextOutW(hdc, x, cy, widx.c_str(), (int)widx.size());
                     GetTextExtentPoint32W(hdc, widx.c_str(), (int)widx.size(), &sz);
-                    x += sz.cx;
+                    int cw = sz.cx;
 
                     SetTextColor(hdc, self->getTextColor());
                     std::wstring wtext = utf8ToWide(candidates[i].first);
-                    TextOutW(hdc, x, 6, wtext.c_str(), (int)wtext.size());
+                    TextOutW(hdc, x + cw, cy, wtext.c_str(), (int)wtext.size());
                     GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz);
-                    x += sz.cx + 8;
+
+                    if (!g_settings.verticalLayout) {
+                        x += cw + sz.cx + 8;
+                    }
                 }
 
+                // 翻页提示 + 齿轮
                 SetTextColor(hdc, RGB(150, 150, 150));
                 std::wstring wpage = L" -/=/PgUp/PgDn翻页";
-                TextOutW(hdc, x, 6, wpage.c_str(), (int)wpage.size());
+                int pageY = y;
+                int pageX = x;
+                if (g_settings.verticalLayout) {
+                    // 竖排模式: 在所有候选下方单独一行 (拼音占用首行)
+                    pageY = candBaseY + (int)candidates.size() * self->m_rowH + 2;
+                    pageX = 8;
+                }
+                TextOutW(hdc, pageX, pageY, wpage.c_str(), (int)wpage.size());
                 GetTextExtentPoint32W(hdc, wpage.c_str(), (int)wpage.size(), &sz);
-                x += sz.cx + 4;
 
-                // 设置按钮 "⚙"
+                // 齿轮紧跟翻页提示
                 SetTextColor(hdc, RGB(80, 80, 200));
                 std::wstring wgear = L"⚙";
-                TextOutW(hdc, x, 6, wgear.c_str(), (int)wgear.size());
+                int gearX = pageX + sz.cx + 4;
+                TextOutW(hdc, gearX, pageY, wgear.c_str(), (int)wgear.size());
                 SIZE gearSz;
                 GetTextExtentPoint32W(hdc, wgear.c_str(), (int)wgear.size(), &gearSz);
-                self->m_settingsBtnRect = {x, 4, x + gearSz.cx + 4, 4 + gearSz.cy + 4};
+                self->m_settingsBtnRect = {gearX, pageY, gearX + gearSz.cx + 4, pageY + gearSz.cy};
 
                 EndPaint(hwnd, &ps);
             }
@@ -913,7 +984,7 @@ void applySettingsToEngine(const PinyinSettings& s) {
             -s.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
-            L"Microsoft YaHei");
+            s.fontName.c_str());
 
         // 2. 如果候选框正在显示，立即刷新以反映新设置
         //    (颜色/字体/竖排布局/候选数量等)
@@ -1184,6 +1255,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
     }
 
     g_hInst = hInstance;
+
+    SetProcessDPIAware();
+
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     InitializeCriticalSection(&g_pendingLock);
 

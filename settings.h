@@ -55,12 +55,13 @@ struct PinyinSettings {
     // === 语言 ===
     bool useTraditional = false;
 
-    // === 外观 ===
-    COLORREF bgColor     = RGB(245, 245, 245);
-    COLORREF borderColor = RGB(180, 180, 180);
-    COLORREF textColor   = RGB(50, 50, 50);
-    COLORREF indexColor  = RGB(100, 100, 200);
-    COLORREF inputColor  = RGB(0, 100, 200);
+    // === 外观 (默认 Dark 墨黑主题) ===
+    COLORREF bgColor     = RGB(0x15, 0x15, 0x15);  // #151515
+    COLORREF borderColor = RGB(0x33, 0x33, 0x33);  // #333333
+    COLORREF textColor   = RGB(0xBD, 0xBD, 0xBD);  // #BDBDBD
+    COLORREF indexColor  = RGB(0x76, 0x76, 0x76);  // #767676
+    COLORREF inputColor  = RGB(0x5E, 0x97, 0xF6);  // #5E97F6 蓝色强调
+    std::wstring fontName = L"Microsoft YaHei"; // 字体名称
     int fontSize         = 18;   // 字体高度 (负值=像素)
     int candidateCount   = 5;    // 候选词数量 5-9
     bool verticalLayout  = false; // 候选框竖排
@@ -91,7 +92,7 @@ struct PinyinSettings {
         COLORREF bg, border, text, index, input;
     } skins[];
 
-    static const int SKIN_COUNT = 6;
+    static const int SKIN_COUNT = 8;
 
     void applySkin(int idx) {
         if (idx < 0 || idx >= SKIN_COUNT) return;
@@ -124,6 +125,7 @@ struct PinyinSettings {
             else if (key == "textColor") textColor = (COLORREF)std::stoul(val);
             else if (key == "indexColor") indexColor = (COLORREF)std::stoul(val);
             else if (key == "inputColor") inputColor = (COLORREF)std::stoul(val);
+            else if (key == "fontName") fontName = utf8ToWide(val);
             else if (key == "fontSize") fontSize = std::stoi(val);
             else if (key == "candidateCount") candidateCount = std::stoi(val);
             else if (key == "verticalLayout") verticalLayout = (val == "1");
@@ -154,6 +156,7 @@ struct PinyinSettings {
         fout << "textColor=" << (unsigned long)textColor << "\n";
         fout << "indexColor=" << (unsigned long)indexColor << "\n";
         fout << "inputColor=" << (unsigned long)inputColor << "\n";
+        fout << "fontName=" << wideToUtf8(fontName) << "\n";
         fout << "fontSize=" << fontSize << "\n";
         fout << "candidateCount=" << candidateCount << "\n";
         fout << "verticalLayout=" << verticalLayout << "\n";
@@ -174,14 +177,18 @@ struct PinyinSettings {
     }
 };
 
-// 预设皮肤定义
+// 预设皮肤定义 (5 款暗色 + 3 款亮色)
 inline const PinyinSettings::Skin PinyinSettings::skins[] = {
-    {L"默认浅灰", RGB(245,245,245), RGB(180,180,180), RGB(50,50,50),   RGB(100,100,200), RGB(0,100,200)},
-    {L"简约白",   RGB(255,255,255), RGB(200,200,200), RGB(30,30,30),   RGB(80,80,180),   RGB(0,80,180)},
-    {L"深邃黑",   RGB(40,40,40),    RGB(80,80,80),    RGB(230,230,230), RGB(130,130,255), RGB(100,180,255)},
-    {L"护眼绿",   RGB(235,245,235), RGB(150,200,150), RGB(40,60,40),   RGB(60,130,60),   RGB(0,100,50)},
-    {L"暖米黄",   RGB(255,250,240), RGB(200,180,150), RGB(60,50,40),   RGB(180,120,80),  RGB(150,80,40)},
-    {L"清爽蓝",   RGB(235,240,255), RGB(150,170,220), RGB(30,40,80),   RGB(60,80,200),   RGB(0,60,180)},
+    // ── Dark 系列 ──
+    {L"Dark 墨黑",   RGB(0x15,0x15,0x15), RGB(0x33,0x33,0x33), RGB(0xBD,0xBD,0xBD), RGB(0x76,0x76,0x76), RGB(0x5E,0x97,0xF6)},
+    {L"Dark 炭灰",   RGB(0x21,0x21,0x21), RGB(0x3C,0x3C,0x3C), RGB(0xC8,0xC8,0xC8), RGB(0x82,0x82,0x82), RGB(0x6D,0xA0,0xF8)},
+    {L"Dark 暖咖",   RGB(0x1C,0x18,0x16), RGB(0x3D,0x34,0x30), RGB(0xC8,0xB8,0xA0), RGB(0x88,0x78,0x60), RGB(0xD4,0xA0,0x50)},
+    {L"Dark 墨绿",   RGB(0x14,0x1A,0x14), RGB(0x2A,0x3A,0x2A), RGB(0xA0,0xC0,0xA0), RGB(0x60,0x80,0x60), RGB(0x50,0xB8,0x70)},
+    {L"Dark 藏蓝",   RGB(0x14,0x16,0x20), RGB(0x2A,0x30,0x40), RGB(0xA0,0xB0,0xD0), RGB(0x68,0x78,0xA0), RGB(0x60,0x78,0xE0)},
+    // ── 亮色系列 ──
+    {L"亮色 浅灰",   RGB(0xF0,0xF0,0xF0), RGB(0xC0,0xC0,0xC0), RGB(0x33,0x33,0x33), RGB(0x70,0x70,0xC0), RGB(0x00,0x60,0xC0)},
+    {L"亮色 纯白",   RGB(0xFF,0xFF,0xFF), RGB(0xD0,0xD0,0xD0), RGB(0x1A,0x1A,0x1A), RGB(0x58,0x58,0xB8), RGB(0x00,0x48,0xB8)},
+    {L"亮色 暖米",   RGB(0xFF,0xF8,0xF0), RGB(0xD8,0xC8,0xB0), RGB(0x4A,0x3A,0x2A), RGB(0xB0,0x70,0x50), RGB(0xA0,0x50,0x30)},
 };
 
 // ==================== 系统注册功能 ====================
@@ -533,7 +540,7 @@ struct SettingsDialog {
 
             HFONT hFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, g_tempSettings.fontName.c_str());
             SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
 
@@ -727,6 +734,42 @@ inline PinyinSettings SettingsDialog::g_tempSettings;
 inline HWND SettingsDialog::g_hSkinPreview = nullptr;
 inline int SettingsDialog::g_selectedSkin = 0;
 
+// ==================== 系统字体枚举 ====================
+// 使用 EnumFontFamiliesExW 遍历系统已安装的 TrueType/OpenType 字体
+// 返回去重并排序的字体名称列表，可直接用于 CreateFontW
+inline std::vector<std::wstring> enumSystemFonts() {
+    std::vector<std::wstring> fonts;
+
+    HDC hdc = GetDC(nullptr);
+    if (!hdc) return fonts;
+
+    LOGFONTW lf = {};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfFaceName[0] = L'\0';
+    lf.lfPitchAndFamily = 0;
+
+    EnumFontFamiliesExW(hdc, &lf,
+        [](const LOGFONTW* pLf, const TEXTMETRICW*, DWORD fontType, LPARAM lParam) -> int {
+            auto* pFonts = reinterpret_cast<std::vector<std::wstring>*>(lParam);
+            // 只收录 TrueType / OpenType 字体 (排除点阵字体和设备字体)
+            if (fontType & TRUETYPE_FONTTYPE) {
+                std::wstring name = pLf->lfFaceName;
+                // 去重 (同一字体家族的不同样式只保留一个)
+                if (std::find(pFonts->begin(), pFonts->end(), name) == pFonts->end()) {
+                    pFonts->push_back(name);
+                }
+            }
+            return 1; // 继续枚举
+        },
+        (LPARAM)&fonts, 0);
+
+    ReleaseDC(nullptr, hdc);
+
+    // 按 Unicode 排序 (拉丁字母在前, 中文在后)
+    std::sort(fonts.begin(), fonts.end());
+    return fonts;
+}
+
 // ==================== 无资源文件的设置窗口构建 ====================
 // 因为不使用 .rc 资源文件，纯代码创建所有控件
 struct SettingsWindow {
@@ -734,7 +777,8 @@ struct SettingsWindow {
     HWND m_hSkinPreview = nullptr;
     int m_selectedSkin = 0;
     PinyinSettings m_temp;
-    HFONT m_hFont = nullptr; // 微软雅黑, 所有控件共用
+    HFONT m_hFont = nullptr; // 所有控件共用字体
+    float m_dpiScale = 1.0f; // DPI 缩放因子 (96 DPI=1.0, 192 DPI=2.0)
 
     // 皮肤预览子窗口过程
     static LRESULT CALLBACK skinPreviewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -759,36 +803,38 @@ struct SettingsWindow {
             SelectObject(hdc, oldPen);
             DeleteObject(hPen);
 
-            HFONT hFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            auto S = [self](int v) -> int { return (int)(v * self->m_dpiScale + 0.5f); };
+            HFONT hFont = CreateFontW(-S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, self->m_temp.fontName.c_str());
             SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
 
+            int py = S(5);
             SetTextColor(hdc, self->m_temp.inputColor);
-            TextOutW(hdc, 5, 5, L"[nihao] ", 8);
+            TextOutW(hdc, py, py, L"[nihao] ", 8);
             SIZE sz; GetTextExtentPoint32W(hdc, L"[nihao] ", 8, &sz);
-            int x = 5 + sz.cx;
+            int x = py + sz.cx;
 
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, 5, L"1.", 2);
+            TextOutW(hdc, x, py, L"1.", 2);
             GetTextExtentPoint32W(hdc, L"1.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, 5, L"你好", 2);
-            GetTextExtentPoint32W(hdc, L"你好", 2, &sz); x += sz.cx + 8;
+            TextOutW(hdc, x, py, L"你好", 2);
+            GetTextExtentPoint32W(hdc, L"你好", 2, &sz); x += sz.cx + S(8);
 
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, 5, L"2.", 2);
+            TextOutW(hdc, x, py, L"2.", 2);
             GetTextExtentPoint32W(hdc, L"2.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, 5, L"泥嚎", 2);
-            GetTextExtentPoint32W(hdc, L"泥嚎", 2, &sz); x += sz.cx + 8;
+            TextOutW(hdc, x, py, L"泥嚎", 2);
+            GetTextExtentPoint32W(hdc, L"泥嚎", 2, &sz); x += sz.cx + S(8);
 
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, 5, L"3.", 2);
+            TextOutW(hdc, x, py, L"3.", 2);
             GetTextExtentPoint32W(hdc, L"3.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, 5, L"你号", 2);
+            TextOutW(hdc, x, py, L"你号", 2);
 
             DeleteObject(hFont);
             EndPaint(hwnd, &ps);
@@ -849,48 +895,64 @@ struct SettingsWindow {
     void buildUI() {
         HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(m_hDlg, GWLP_HINSTANCE);
 
-        // 创建微软雅黑字体 (所有控件共用)
+        // DPI 缩放辅助: 将 96 DPI 基准像素值转换为当前屏幕物理像素
+        auto S = [this](int v) -> int { return (int)(v * m_dpiScale + 0.5f); };
+
+        // 创建字体 (所有控件共用, 字号也随 DPI 缩放)
         if (!m_hFont) {
-            m_hFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            m_hFont = CreateFontW(-S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, m_temp.fontName.c_str());
         }
 
         // === 标题 ===
-        addLabel(L"PinyinIME 输入法设置", 15, 10, 300, 24);
+        addLabel(L"PinyinIME 输入法设置", S(15), S(10), S(300), S(24));
 
         // === 基本设置组 ===
-        int gy = 40;
-        addLabel(L"━━ 基本设置 ━━", 15, gy, 200, 18);
-        gy += 22;
+        int gy = S(40);
+        addLabel(L"━━ 基本设置 ━━", S(15), gy, S(200), S(18));
+        gy += S(22);
 
-        addCheck(L"繁体中文模式", 401, 20, gy, 140, 20, m_temp.useTraditional);
-        addCheck(L"竖排候选框", 404, 170, gy, 120, 20, m_temp.verticalLayout);
-        addCheck(L"中文标点符号（，。）", 405, 300, gy, 180, 20, m_temp.chinesePunctuation);
-        gy += 24;
+        addCheck(L"繁体中文模式", 401, S(20), gy, S(140), S(20), m_temp.useTraditional);
+        addCheck(L"竖排候选框", 404, S(170), gy, S(120), S(20), m_temp.verticalLayout);
+        addCheck(L"中文标点符号（，。）", 405, S(300), gy, S(180), S(20), m_temp.chinesePunctuation);
+        gy += S(24);
 
-        addLabel(L"候选词数量 (3-9):", 20, gy, 130, 20);
-        addEdit(402, 155, gy - 2, 30, 20, std::to_wstring(m_temp.candidateCount).c_str());
-        addLabel(L"字体大小 (12-36):", 200, gy, 130, 20);
-        addEdit(403, 335, gy - 2, 30, 20, std::to_wstring(m_temp.fontSize).c_str());
-        gy += 28;
+        addLabel(L"候选词数量 (3-9):", S(20), gy, S(130), S(20));
+        addEdit(402, S(155), gy - S(2), S(30), S(20), std::to_wstring(m_temp.candidateCount).c_str());
+        addLabel(L"字体大小 (12-36):", S(200), gy, S(130), S(20));
+        addEdit(403, S(335), gy - S(2), S(30), S(20), std::to_wstring(m_temp.fontSize).c_str());
+        gy += S(28);
+
+        // 字体选择
+        addLabel(L"选择字体:", S(20), gy, S(80), S(20));
+        HWND hFontCombo = addCombo(408, S(105), gy - S(2), S(280), S(300));
+        {
+            auto fonts = enumSystemFonts();
+            for (const auto& f : fonts) {
+                SendMessageW(hFontCombo, CB_ADDSTRING, 0, (LPARAM)f.c_str());
+            }
+            int fontIdx = (int)SendMessageW(hFontCombo, CB_FINDSTRINGEXACT, -1, (LPARAM)m_temp.fontName.c_str());
+            if (fontIdx >= 0) SendMessageW(hFontCombo, CB_SETCURSEL, fontIdx, 0);
+        }
+        gy += S(28);
 
         // === 外观设置组 ===
-        addLabel(L"━━ 外观配色 ━━", 15, gy, 200, 18);
-        gy += 22;
+        addLabel(L"━━ 外观配色 ━━", S(15), gy, S(200), S(18));
+        gy += S(22);
 
-        addLabel(L"预设皮肤:", 20, gy, 80, 20);
-        HWND hSkin = addCombo(701, 100, gy - 2, 140, 200);
+        addLabel(L"预设皮肤:", S(20), gy, S(80), S(20));
+        HWND hSkin = addCombo(701, S(100), gy - S(2), S(140), S(200));
         for (int i = 0; i < PinyinSettings::SKIN_COUNT; i++) {
             SendMessageW(hSkin, CB_ADDSTRING, 0, (LPARAM)PinyinSettings::skins[i].name);
         }
         SendMessageW(hSkin, CB_SETCURSEL, 0, 0);
 
-        addButton(L"🎨 自定义主色调", 702, 255, gy - 2, 140, 22);
-        gy += 28;
+        addButton(L"🎨 自定义主色调", 702, S(255), gy - S(2), S(140), S(22));
+        gy += S(28);
 
         // 皮肤预览
-        addLabel(L"候选框预览:", 20, gy, 80, 20);
+        addLabel(L"候选框预览:", S(20), gy, S(80), S(20));
 
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
@@ -903,41 +965,41 @@ struct SettingsWindow {
 
         m_hSkinPreview = CreateWindowExW(0, L"PinyinSkinPreview", L"",
             WS_CHILD | WS_VISIBLE,
-            20, gy, 460, 35, m_hDlg, nullptr, hInst, this);
-        gy += 42;
+            S(20), gy, S(460), S(35), m_hDlg, nullptr, hInst, this);
+        gy += S(42);
 
-        addButton(L"📝 管理用户词典...", 801, 20, gy, 170, 26);
-        gy += 32;
+        addButton(L"📝 管理用户词典...", 801, S(20), gy, S(170), S(26));
+        gy += S(32);
 
         // === 模糊音设置组 ===
-        addLabel(L"━━ 模糊音设置 ━━", 15, gy, 200, 18);
-        gy += 22;
+        addLabel(L"━━ 模糊音设置 ━━", S(15), gy, S(200), S(18));
+        gy += S(22);
 
-        addCheck(L"z/zh 不分", 501, 20, gy, 95, 20, m_temp.fuzzyZ_Zh);
-        addCheck(L"c/ch 不分", 502, 125, gy, 95, 20, m_temp.fuzzyC_Ch);
-        addCheck(L"s/sh 不分", 503, 230, gy, 95, 20, m_temp.fuzzyS_Sh);
-        addCheck(L"n/l 不分", 504, 335, gy, 90, 20, m_temp.fuzzyN_L);
-        gy += 22;
-        addCheck(L"f/h 不分", 505, 20, gy, 95, 20, m_temp.fuzzyF_H);
-        addCheck(L"en/eng 不分", 506, 125, gy, 110, 20, m_temp.fuzzyEn_Eng);
-        addCheck(L"in/ing 不分", 507, 240, gy, 110, 20, m_temp.fuzzyIn_Ing);
-        gy += 28;
+        addCheck(L"z/zh 不分", 501, S(20), gy, S(95), S(20), m_temp.fuzzyZ_Zh);
+        addCheck(L"c/ch 不分", 502, S(125), gy, S(95), S(20), m_temp.fuzzyC_Ch);
+        addCheck(L"s/sh 不分", 503, S(230), gy, S(95), S(20), m_temp.fuzzyS_Sh);
+        addCheck(L"n/l 不分", 504, S(335), gy, S(90), S(20), m_temp.fuzzyN_L);
+        gy += S(22);
+        addCheck(L"f/h 不分", 505, S(20), gy, S(95), S(20), m_temp.fuzzyF_H);
+        addCheck(L"en/eng 不分", 506, S(125), gy, S(110), S(20), m_temp.fuzzyEn_Eng);
+        addCheck(L"in/ing 不分", 507, S(240), gy, S(110), S(20), m_temp.fuzzyIn_Ing);
+        gy += S(28);
 
         // === 智能功能组 ===
-        addLabel(L"━━ 智能功能 ━━", 15, gy, 200, 18);
-        gy += 22;
+        addLabel(L"━━ 智能功能 ━━", S(15), gy, S(200), S(18));
+        gy += S(22);
 
-        addCheck(L"智能拼音纠错", 601, 20, gy, 140, 20, m_temp.smartCorrection);
-        addCheck(L"自动加入新词到用户词典", 602, 170, gy, 190, 20, m_temp.autoWordCreate);
-        addCheck(L"词频自动调整", 603, 370, gy, 140, 20, m_temp.autoFreqAdjust);
-        gy += 30;
+        addCheck(L"智能拼音纠错", 601, S(20), gy, S(140), S(20), m_temp.smartCorrection);
+        addCheck(L"自动加入新词到用户词典", 602, S(170), gy, S(190), S(20), m_temp.autoWordCreate);
+        addCheck(L"词频自动调整", 603, S(370), gy, S(140), S(20), m_temp.autoFreqAdjust);
+        gy += S(30);
 
         // === 系统设置组 ===
-        addLabel(L"━━ 系统 ━━", 15, gy, 200, 18);
-        gy += 22;
+        addLabel(L"━━ 系统 ━━", S(15), gy, S(200), S(18));
+        gy += S(22);
 
-        addLabel(L"切换热键:", 20, gy, 80, 20);
-        HWND hHotkey = addCombo(406, 100, gy - 2, 160, 200);
+        addLabel(L"切换热键:", S(20), gy, S(80), S(20));
+        HWND hHotkey = addCombo(406, S(100), gy - S(2), S(160), S(200));
         SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Ctrl + Shift");
         SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Alt + Shift");
         SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Right Shift (单独)");
@@ -953,18 +1015,18 @@ struct SettingsWindow {
                 hotkeySel = 3;
             SendMessageW(hHotkey, CB_SETCURSEL, hotkeySel, 0);
         }
-        gy += 28;
+        gy += S(28);
 
-        addButton(L"📌 注册输入法到系统", 910, 20, gy, 180, 26);
-        addLabel(L"将 PinyinIME 注册为系统输入法并设置开机自启", 210, gy + 3, 300, 20);
-        gy += 32;
+        addButton(L"📌 注册输入法到系统", 910, S(20), gy, S(180), S(26));
+        addLabel(L"将 PinyinIME 注册为系统输入法并设置开机自启", S(210), gy + S(3), S(300), S(20));
+        gy += S(32);
 
         // === 底部按钮 ===
-        addButton(L"✅ 保存设置", 901, 250, gy, 100, 28);
-        addButton(L"❌ 取消", 902, 360, gy, 80, 28);
+        addButton(L"✅ 保存设置", 901, S(250), gy, S(100), S(28));
+        addButton(L"❌ 取消", 902, S(360), gy, S(80), S(28));
 
         // 设置窗口总尺寸 (使用 AdjustWindowRect 计算包含标题栏的窗口大小)
-        RECT clientRC = {0, 0, 530, gy + 52};
+        RECT clientRC = {0, 0, S(530), gy + S(52)};
         AdjustWindowRect(&clientRC, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
         int winW = clientRC.right - clientRC.left;
         int winH = clientRC.bottom - clientRC.top;
@@ -994,6 +1056,18 @@ struct SettingsWindow {
                 if (sel >= 0 && sel < PinyinSettings::SKIN_COUNT) {
                     self->m_selectedSkin = sel;
                     self->m_temp.applySkin(sel);
+                    InvalidateRect(self->m_hSkinPreview, nullptr, TRUE);
+                }
+                return 0;
+            }
+
+            if (id == 408 && code == CBN_SELCHANGE) { // 字体选择
+                HWND hFontCombo = GetDlgItem(hwnd, 408);
+                int sel = (int)SendMessageW(hFontCombo, CB_GETCURSEL, 0, 0);
+                if (sel >= 0) {
+                    wchar_t buf[64] = {};
+                    SendMessageW(hFontCombo, CB_GETLBTEXT, sel, (LPARAM)buf);
+                    self->m_temp.fontName = buf;
                     InvalidateRect(self->m_hSkinPreview, nullptr, TRUE);
                 }
                 return 0;
@@ -1050,6 +1124,17 @@ struct SettingsWindow {
                 if (ok && cnt >= 3 && cnt <= 9) self->m_temp.candidateCount = cnt;
                 int fs = GetDlgItemInt(hwnd, 403, &ok, TRUE);
                 if (ok && fs >= 12 && fs <= 36) self->m_temp.fontSize = fs;
+
+                // 读取字体选择
+                {
+                    HWND hFontCombo = GetDlgItem(hwnd, 408);
+                    int fontSel = (int)SendMessageW(hFontCombo, CB_GETCURSEL, 0, 0);
+                    if (fontSel >= 0) {
+                        wchar_t buf[64] = {};
+                        SendMessageW(hFontCombo, CB_GETLBTEXT, fontSel, (LPARAM)buf);
+                        if (buf[0]) self->m_temp.fontName = buf;
+                    }
+                }
 
                 self->m_temp.fuzzyZ_Zh = (IsDlgButtonChecked(hwnd, 501) == BST_CHECKED);
                 self->m_temp.fuzzyC_Ch = (IsDlgButtonChecked(hwnd, 502) == BST_CHECKED);
@@ -1121,6 +1206,15 @@ struct SettingsWindow {
         SettingsWindow* sw = new SettingsWindow();
         sw->m_temp = g_settings;
 
+        // 获取系统 DPI 缩放因子 (用于适配 4K/1080p 等不同分辨率屏幕)
+        {
+            HDC hdc = GetDC(nullptr);
+            int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+            ReleaseDC(nullptr, hdc);
+            sw->m_dpiScale = (float)dpi / 96.0f;
+        }
+        auto S = [sw](int v) -> int { return (int)(v * sw->m_dpiScale + 0.5f); };
+
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = dlgProc;
@@ -1133,7 +1227,7 @@ struct SettingsWindow {
         HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
             L"PinyinIMESettings", L"PinyinIME 设置",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-            CW_USEDEFAULT, CW_USEDEFAULT, 520, 580,
+            CW_USEDEFAULT, CW_USEDEFAULT, S(530), S(580),
             hParent, nullptr, hInst, sw);
 
         if (hDlg) {
