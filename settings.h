@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #include <commctrl.h>
+#include <gdiplus.h>
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "Advapi32.lib")
@@ -55,14 +56,14 @@ struct PinyinSettings {
     // === 语言 ===
     bool useTraditional = false;
 
-    // === 外观 (默认 Dark 墨黑主题) ===
-    COLORREF bgColor     = RGB(0x15, 0x15, 0x15);  // #151515
-    COLORREF borderColor = RGB(0x33, 0x33, 0x33);  // #333333
-    COLORREF textColor   = RGB(0xBD, 0xBD, 0xBD);  // #BDBDBD
-    COLORREF indexColor  = RGB(0x76, 0x76, 0x76);  // #767676
-    COLORREF inputColor  = RGB(0x5E, 0x97, 0xF6);  // #5E97F6 蓝色强调
+    // === 外观 (默认 亮色 墨绿主题) ===
+    COLORREF bgColor     = RGB(0xF0, 0xF5, 0xF0);  // 淡绿背景
+    COLORREF borderColor = RGB(0x96, 0xC6, 0x96);  // 中绿边框
+    COLORREF textColor   = RGB(0x28, 0x3D, 0x28);  // 深绿文字
+    COLORREF indexColor  = RGB(0x3C, 0x81, 0x3C);  // 墨绿序号
+    COLORREF inputColor  = RGB(0x32, 0x64, 0x32);  // 墨绿输入
     std::wstring fontName = L"Microsoft YaHei"; // 字体名称
-    int fontSize         = 18;   // 字体高度 (负值=像素)
+    int fontSize         = 20;   // 字体高度 (负值=像素)
     int candidateCount   = 5;    // 候选词数量 5-9
     bool verticalLayout  = false; // 候选框竖排
 
@@ -92,7 +93,7 @@ struct PinyinSettings {
         COLORREF bg, border, text, index, input;
     } skins[];
 
-    static const int SKIN_COUNT = 8;
+    static const int SKIN_COUNT = 9;
 
     void applySkin(int idx) {
         if (idx < 0 || idx >= SKIN_COUNT) return;
@@ -177,18 +178,19 @@ struct PinyinSettings {
     }
 };
 
-// 预设皮肤定义 (5 款暗色 + 3 款亮色)
+// 预设皮肤定义 (5 款暗色 + 4 款亮色)
 inline const PinyinSettings::Skin PinyinSettings::skins[] = {
-    // ── Dark 系列 ──
-    {L"Dark 墨黑",   RGB(0x15,0x15,0x15), RGB(0x33,0x33,0x33), RGB(0xBD,0xBD,0xBD), RGB(0x76,0x76,0x76), RGB(0x5E,0x97,0xF6)},
-    {L"Dark 炭灰",   RGB(0x21,0x21,0x21), RGB(0x3C,0x3C,0x3C), RGB(0xC8,0xC8,0xC8), RGB(0x82,0x82,0x82), RGB(0x6D,0xA0,0xF8)},
-    {L"Dark 暖咖",   RGB(0x1C,0x18,0x16), RGB(0x3D,0x34,0x30), RGB(0xC8,0xB8,0xA0), RGB(0x88,0x78,0x60), RGB(0xD4,0xA0,0x50)},
-    {L"Dark 墨绿",   RGB(0x14,0x1A,0x14), RGB(0x2A,0x3A,0x2A), RGB(0xA0,0xC0,0xA0), RGB(0x60,0x80,0x60), RGB(0x50,0xB8,0x70)},
-    {L"Dark 藏蓝",   RGB(0x14,0x16,0x20), RGB(0x2A,0x30,0x40), RGB(0xA0,0xB0,0xD0), RGB(0x68,0x78,0xA0), RGB(0x60,0x78,0xE0)},
+    // ── 暗色 系列 ──
+    {L"暗色 墨黑",   RGB(0x15,0x15,0x15), RGB(0x33,0x33,0x33), RGB(0xBD,0xBD,0xBD), RGB(0x76,0x76,0x76), RGB(0x5E,0x97,0xF6)},
+    {L"暗色 炭灰",   RGB(0x21,0x21,0x21), RGB(0x3C,0x3C,0x3C), RGB(0xC8,0xC8,0xC8), RGB(0x82,0x82,0x82), RGB(0x6D,0xA0,0xF8)},
+    {L"暗色 暖咖",   RGB(0x1C,0x18,0x16), RGB(0x3D,0x34,0x30), RGB(0xC8,0xB8,0xA0), RGB(0x88,0x78,0x60), RGB(0xD4,0xA0,0x50)},
+    {L"暗色 墨绿",   RGB(0x14,0x1A,0x14), RGB(0x2A,0x3A,0x2A), RGB(0xA0,0xC0,0xA0), RGB(0x60,0x80,0x60), RGB(0x50,0xB8,0x70)},
+    {L"暗色 藏蓝",   RGB(0x14,0x16,0x20), RGB(0x2A,0x30,0x40), RGB(0xA0,0xB0,0xD0), RGB(0x68,0x78,0xA0), RGB(0x60,0x78,0xE0)},
     // ── 亮色系列 ──
     {L"亮色 浅灰",   RGB(0xF0,0xF0,0xF0), RGB(0xC0,0xC0,0xC0), RGB(0x33,0x33,0x33), RGB(0x70,0x70,0xC0), RGB(0x00,0x60,0xC0)},
     {L"亮色 纯白",   RGB(0xFF,0xFF,0xFF), RGB(0xD0,0xD0,0xD0), RGB(0x1A,0x1A,0x1A), RGB(0x58,0x58,0xB8), RGB(0x00,0x48,0xB8)},
     {L"亮色 暖米",   RGB(0xFF,0xF8,0xF0), RGB(0xD8,0xC8,0xB0), RGB(0x4A,0x3A,0x2A), RGB(0xB0,0x70,0x50), RGB(0xA0,0x50,0x30)},
+    {L"亮色 墨绿",   RGB(0xF0,0xF5,0xF0), RGB(0x96,0xC6,0x96), RGB(0x28,0x3D,0x28), RGB(0x3C,0x81,0x3C), RGB(0x32,0x64,0x32)},
 };
 
 // ==================== 系统注册功能 ====================
@@ -775,10 +777,11 @@ inline std::vector<std::wstring> enumSystemFonts() {
 struct SettingsWindow {
     HWND m_hDlg = nullptr;
     HWND m_hSkinPreview = nullptr;
-    int m_selectedSkin = 0;
+    int m_selectedSkin = 8;  // 默认 亮色 墨绿
     PinyinSettings m_temp;
-    HFONT m_hFont = nullptr; // 所有控件共用字体
-    float m_dpiScale = 1.0f; // DPI 缩放因子 (96 DPI=1.0, 192 DPI=2.0)
+    HFONT m_hFont = nullptr;     // 所有控件共用字体
+    HBRUSH m_hBgBrush = nullptr; // 对话框背景画刷 (跟随皮肤)
+    float m_dpiScale = 1.0f;     // DPI 缩放因子 (96 DPI=1.0, 192 DPI=2.0)
 
     // 皮肤预览子窗口过程
     static LRESULT CALLBACK skinPreviewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -793,48 +796,113 @@ struct SettingsWindow {
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc; GetClientRect(hwnd, &rc);
 
-            HBRUSH hBg = CreateSolidBrush(self->m_temp.bgColor);
-            FillRect(hdc, &rc, hBg);
-            DeleteObject(hBg);
-
-            HPEN hPen = CreatePen(PS_SOLID, 1, self->m_temp.borderColor);
-            HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
-            Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-            SelectObject(hdc, oldPen);
-            DeleteObject(hPen);
-
             auto S = [self](int v) -> int { return (int)(v * self->m_dpiScale + 0.5f); };
+
+            // 字体 (字号与真实候选框默认一致)
             HFONT hFont = CreateFontW(-S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, self->m_temp.fontName.c_str());
             SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
 
-            int py = S(5);
-            SetTextColor(hdc, self->m_temp.inputColor);
-            TextOutW(hdc, py, py, L"[nihao] ", 8);
-            SIZE sz; GetTextExtentPoint32W(hdc, L"[nihao] ", 8, &sz);
-            int x = py + sz.cx;
+            // 获取字体度量 (用于圆角半径和文字定位)
+            TEXTMETRICW tm;
+            GetTextMetrics(hdc, &tm);
 
+            // ── GDI+ 抗锯齿: 背景填充 + 渐变圆角边框 ──
+            {
+                Gdiplus::Graphics graphics(hdc);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+                int w = rc.right, h = rc.bottom;
+                int cr = (std::max)(6, (std::min)(12, (int)(tm.tmHeight * 2 / 3)));
+
+                // 圆角矩形路径构建器
+                auto makeRR = [](Gdiplus::GraphicsPath& p, int x, int y, int rw, int rh, int rad) {
+                    p.Reset();
+                    p.StartFigure();
+                    p.AddArc(x, y, rad*2, rad*2, 180, 90);
+                    p.AddArc(x + rw - rad*2, y, rad*2, rad*2, 270, 90);
+                    p.AddArc(x + rw - rad*2, y + rh - rad*2, rad*2, rad*2, 0, 90);
+                    p.AddArc(x, y + rh - rad*2, rad*2, rad*2, 90, 90);
+                    p.CloseFigure();
+                };
+
+                // 填充背景
+                Gdiplus::GraphicsPath bgPath;
+                {
+                    COLORREF c = self->m_temp.bgColor;
+                    Gdiplus::SolidBrush bgBrush(Gdiplus::Color(GetRValue(c), GetGValue(c), GetBValue(c)));
+                    makeRR(bgPath, 0, 0, w, h, cr);
+                    graphics.FillPath(&bgBrush, &bgPath);
+                }
+
+                // 渐变边框
+                COLORREF bc = self->m_temp.borderColor;
+                COLORREF bg = self->m_temp.bgColor;
+                int rr = GetRValue(bc), rg = GetGValue(bc), rb = GetBValue(bc);
+                int bgBright = (GetRValue(bg)*299 + GetGValue(bg)*587 + GetBValue(bg)*114) / 1000;
+                int dir = (bgBright < 128) ? 1 : -1;
+                auto clampC = [](int v) -> int { return v < 0 ? 0 : (v > 255 ? 255 : v); };
+
+                Gdiplus::GraphicsPath borderPath;
+                for (int layer = 0; layer < 3; layer++) {
+                    int off = layer;
+                    int delta = (layer == 0) ? 40 : (layer == 1) ? 18 : 0;
+                    int lw = w - off * 2, lh = h - off * 2;
+                    int lcr = cr - off; if (lcr < 2) lcr = 2;
+                    Gdiplus::Color penColor(clampC(rr + delta * dir), clampC(rg + delta * dir), clampC(rb + delta * dir));
+                    Gdiplus::Pen pen(penColor, 1.0f);
+                    makeRR(borderPath, off, off, lw, lh, lcr);
+                    graphics.DrawPath(&pen, &borderPath);
+                }
+            }
+            // GDI+ Graphics 析构, 恢复 HDC 状态
+
+            // ── GDI 文字渲染 ──
+            int borderW = 3;
+            int pad = (std::max)(4, (int)(tm.tmHeight / 8));
+            int textY = borderW + pad;
+            int x = S(8);
+
+            // 拼音缓冲区
+            SetTextColor(hdc, self->m_temp.inputColor);
+            TextOutW(hdc, x, textY, L"[nihao] ", 8);
+            SIZE sz; GetTextExtentPoint32W(hdc, L"[nihao] ", 8, &sz);
+            x += sz.cx + S(5);
+
+            // 候选词 1
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, py, L"1.", 2);
+            TextOutW(hdc, x, textY, L"1.", 2);
             GetTextExtentPoint32W(hdc, L"1.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, py, L"你好", 2);
+            TextOutW(hdc, x, textY, L"你好", 2);
             GetTextExtentPoint32W(hdc, L"你好", 2, &sz); x += sz.cx + S(8);
 
+            // 候选词 2
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, py, L"2.", 2);
+            TextOutW(hdc, x, textY, L"2.", 2);
             GetTextExtentPoint32W(hdc, L"2.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, py, L"泥嚎", 2);
+            TextOutW(hdc, x, textY, L"泥嚎", 2);
             GetTextExtentPoint32W(hdc, L"泥嚎", 2, &sz); x += sz.cx + S(8);
 
+            // 候选词 3
             SetTextColor(hdc, self->m_temp.indexColor);
-            TextOutW(hdc, x, py, L"3.", 2);
+            TextOutW(hdc, x, textY, L"3.", 2);
             GetTextExtentPoint32W(hdc, L"3.", 2, &sz); x += sz.cx;
             SetTextColor(hdc, self->m_temp.textColor);
-            TextOutW(hdc, x, py, L"你号", 2);
+            TextOutW(hdc, x, textY, L"你号", 2);
+            GetTextExtentPoint32W(hdc, L"你号", 2, &sz); x += sz.cx + S(4);
+
+            // 翻页提示
+            SetTextColor(hdc, RGB(150, 150, 150));
+            TextOutW(hdc, x, textY, L" -/=/翻页", 8);
+            GetTextExtentPoint32W(hdc, L" -/=/翻页", 8, &sz); x += sz.cx + S(4);
+
+            // 齿轮图标
+            SetTextColor(hdc, RGB(80, 80, 200));
+            TextOutW(hdc, x, textY, L"⚙", 1);
 
             DeleteObject(hFont);
             EndPaint(hwnd, &ps);
@@ -892,6 +960,12 @@ struct SettingsWindow {
         return ctrl;
     }
 
+    // 更新背景画刷 (跟随当前皮肤)
+    void updateBgBrush() {
+        if (m_hBgBrush) { DeleteObject(m_hBgBrush); m_hBgBrush = nullptr; }
+        m_hBgBrush = CreateSolidBrush(m_temp.bgColor);
+    }
+
     void buildUI() {
         HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(m_hDlg, GWLP_HINSTANCE);
 
@@ -946,7 +1020,7 @@ struct SettingsWindow {
         for (int i = 0; i < PinyinSettings::SKIN_COUNT; i++) {
             SendMessageW(hSkin, CB_ADDSTRING, 0, (LPARAM)PinyinSettings::skins[i].name);
         }
-        SendMessageW(hSkin, CB_SETCURSEL, 0, 0);
+        SendMessageW(hSkin, CB_SETCURSEL, m_selectedSkin, 0);
 
         addButton(L"🎨 自定义主色调", 702, S(255), gy - S(2), S(140), S(22));
         gy += S(28);
@@ -1045,6 +1119,57 @@ struct SettingsWindow {
             self->buildUI();
             return 0;
         }
+        case WM_ERASEBKGND: {
+            if (!self) break;
+            if (!self->m_hBgBrush) self->updateBgBrush();
+            HDC hdc = (HDC)wp;
+            RECT rc; GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, self->m_hBgBrush);
+            return TRUE; // 已处理背景擦除
+        }
+        case WM_CTLCOLORSTATIC: {
+            if (!self) break;
+            HDC hdc = (HDC)wp;
+            SetTextColor(hdc, self->m_temp.textColor);
+            SetBkColor(hdc, self->m_temp.bgColor);
+            if (!self->m_hBgBrush) self->updateBgBrush();
+            return (LRESULT)self->m_hBgBrush;
+        }
+        case WM_CTLCOLORBTN: {
+            if (!self) break;
+            HDC hdc = (HDC)wp;
+            SetTextColor(hdc, self->m_temp.textColor);
+            SetBkMode(hdc, TRANSPARENT);
+            if (!self->m_hBgBrush) self->updateBgBrush();
+            return (LRESULT)self->m_hBgBrush;
+        }
+        case WM_CTLCOLOREDIT: {
+            if (!self) break;
+            HDC hdc = (HDC)wp;
+            // 编辑框: 根据主题亮度使用略微不同的背景色
+            int bright = (GetRValue(self->m_temp.bgColor)*299 +
+                         GetGValue(self->m_temp.bgColor)*587 +
+                         GetBValue(self->m_temp.bgColor)*114) / 1000;
+            if (bright > 128) {
+                SetTextColor(hdc, self->m_temp.textColor);
+                SetBkColor(hdc, RGB(0xFF, 0xFF, 0xFF)); // 亮色主题: 白色编辑框
+                static HBRUSH s_editBrushLight = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
+                return (LRESULT)s_editBrushLight;
+            } else {
+                SetTextColor(hdc, self->m_temp.textColor);
+                SetBkColor(hdc, RGB(0x2A, 0x2A, 0x2A)); // 暗色主题: 深灰编辑框
+                static HBRUSH s_editBrushDark = CreateSolidBrush(RGB(0x2A, 0x2A, 0x2A));
+                return (LRESULT)s_editBrushDark;
+            }
+        }
+        case WM_CTLCOLORLISTBOX: {
+            if (!self) break;
+            HDC hdc = (HDC)wp;
+            SetTextColor(hdc, self->m_temp.textColor);
+            SetBkColor(hdc, self->m_temp.bgColor);
+            if (!self->m_hBgBrush) self->updateBgBrush();
+            return (LRESULT)self->m_hBgBrush;
+        }
         case WM_COMMAND: {
             int id = LOWORD(wp);
             int code = HIWORD(wp);
@@ -1056,7 +1181,9 @@ struct SettingsWindow {
                 if (sel >= 0 && sel < PinyinSettings::SKIN_COUNT) {
                     self->m_selectedSkin = sel;
                     self->m_temp.applySkin(sel);
+                    self->updateBgBrush();
                     InvalidateRect(self->m_hSkinPreview, nullptr, TRUE);
+                    InvalidateRect(hwnd, nullptr, TRUE); // 刷新对话框背景
                 }
                 return 0;
             }
@@ -1098,7 +1225,9 @@ struct SettingsWindow {
                     }
                     self->m_selectedSkin = -1;
                     SendMessageW(GetDlgItem(hwnd, 701), CB_SETCURSEL, -1, 0);
+                    self->updateBgBrush();
                     InvalidateRect(self->m_hSkinPreview, nullptr, TRUE);
+                    InvalidateRect(hwnd, nullptr, TRUE); // 刷新对话框背景
                 }
                 return 0;
             }
@@ -1193,6 +1322,7 @@ struct SettingsWindow {
         case WM_NCDESTROY:
             if (self) {
                 if (self->m_hFont) { DeleteObject(self->m_hFont); self->m_hFont = nullptr; }
+                if (self->m_hBgBrush) { DeleteObject(self->m_hBgBrush); self->m_hBgBrush = nullptr; }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             // 注意: 不在此处 delete self

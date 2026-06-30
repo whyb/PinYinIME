@@ -11,6 +11,7 @@
 #include <imm.h>
 #include <oleacc.h>
 #include <UIAutomationClient.h>
+#include <gdiplus.h>
 #pragma comment(lib, "imm32.lib")
 #pragma comment(lib, "oleacc.lib")
 #pragma comment(lib, "Ole32.lib")
@@ -18,6 +19,7 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "UIAutomationCore.lib")
+#pragma comment(lib, "gdiplus.lib")
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -42,6 +44,9 @@ static NOTIFYICONDATAW g_trayIcon = {}; // 托盘图标
 // 延迟注入队列（钩子回调中不能直接 SendInput）
 static std::wstring g_pendingText;
 static CRITICAL_SECTION g_pendingLock;
+
+// ==================== GDI+ ====================
+static ULONG_PTR g_gdiplusToken = 0;
 
 // ==================== 全局设置 ====================
 PinyinSettings g_settings;
@@ -814,44 +819,59 @@ public:
                 RECT rc;
                 GetClientRect(hwnd, &rc);
 
-                // 背景
-                HBRUSH hBrush = CreateSolidBrush(self->getBgColor());
-                FillRect(hdc, &rc, hBrush);
-                DeleteObject(hBrush);
-
-                // 渐变圆角边框 (3 层 → 软边缘效果)
+                // ── GDI+ 抗锯齿: 背景填充 + 渐变圆角边框 ──
                 {
+                    Gdiplus::Graphics graphics(hdc);
+                    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+                    int w = rc.right, h = rc.bottom;
+                    int cr = self->m_roundR;
+
+                    // 构建圆角矩形路径 (修改传入的 path 引用, 避免拷贝)
+                    auto makeRoundRectPath = [](Gdiplus::GraphicsPath& path, int x, int y, int rw, int rh, int rad) {
+                        path.Reset();
+                        path.StartFigure();
+                        path.AddArc(x, y, rad*2, rad*2, 180, 90);
+                        path.AddArc(x + rw - rad*2, y, rad*2, rad*2, 270, 90);
+                        path.AddArc(x + rw - rad*2, y + rh - rad*2, rad*2, rad*2, 0, 90);
+                        path.AddArc(x, y + rh - rad*2, rad*2, rad*2, 90, 90);
+                        path.CloseFigure();
+                    };
+
+                    // 填充背景
+                    Gdiplus::GraphicsPath bgPath;
+                    {
+                        COLORREF c = self->getBgColor();
+                        Gdiplus::SolidBrush bgBrush(Gdiplus::Color(GetRValue(c), GetGValue(c), GetBValue(c)));
+                        makeRoundRectPath(bgPath, 0, 0, w, h, cr);
+                        graphics.FillPath(&bgBrush, &bgPath);
+                    }
+
+                    // 渐变边框方向
                     COLORREF bc = self->getBorderColor();
-                    int rr = GetRValue(bc), rg = GetGValue(bc), rb = GetBValue(bc);
-                    int r = rc.right, b = rc.bottom;
-                    int cr = self->m_roundR;  // 圆角半径
-                    HBRUSH nullBr = (HBRUSH)GetStockObject(NULL_BRUSH);
-
-                    // 确定渐变方向: 暗色背景→外浅内深, 亮色背景→外深内浅
                     COLORREF bg = self->getBgColor();
-                    int bgBright = (GetRValue(bg) * 299 + GetGValue(bg) * 587 + GetBValue(bg) * 114) / 1000;
-                    int dir = (bgBright < 128) ? 1 : -1;  // 1=外浅, -1=外深
-
+                    int rr = GetRValue(bc), rg = GetGValue(bc), rb = GetBValue(bc);
+                    int bgBright = (GetRValue(bg)*299 + GetGValue(bg)*587 + GetBValue(bg)*114) / 1000;
+                    int dir = (bgBright < 128) ? 1 : -1;
                     auto clampC = [](int v) -> int { return v < 0 ? 0 : (v > 255 ? 255 : v); };
 
-                    // 第 1 层: 最外层 (最浅/最深)
-                    HPEN p1 = CreatePen(PS_SOLID, 1, RGB(clampC(rr + 40 * dir), clampC(rg + 40 * dir), clampC(rb + 40 * dir)));
-                    SelectObject(hdc, p1); SelectObject(hdc, nullBr);
-                    RoundRect(hdc, 0, 0, r, b, cr * 2, cr * 2);
-
-                    // 第 2 层: 中间层
-                    HPEN p2 = CreatePen(PS_SOLID, 1, RGB(clampC(rr + 18 * dir), clampC(rg + 18 * dir), clampC(rb + 18 * dir)));
-                    SelectObject(hdc, p2); SelectObject(hdc, nullBr);
-                    RoundRect(hdc, 1, 1, r - 1, b - 1, (cr - 1) * 2, (cr - 1) * 2);
-
-                    // 第 3 层: 内层 (原始边框颜色)
-                    HPEN p3 = CreatePen(PS_SOLID, 1, bc);
-                    SelectObject(hdc, p3); SelectObject(hdc, nullBr);
-                    RoundRect(hdc, 2, 2, r - 2, b - 2, (cr - 2) * 2, (cr - 2) * 2);
-
-                    DeleteObject(p3); DeleteObject(p2); DeleteObject(p1);
+                    // 3 层渐变边框 (复用 path 对象)
+                    Gdiplus::GraphicsPath borderPath;
+                    for (int layer = 0; layer < 3; layer++) {
+                        int off = layer;
+                        int delta = (layer == 0) ? 40 : (layer == 1) ? 18 : 0;
+                        int lw = w - off * 2, lh = h - off * 2;
+                        int lcr = cr - off;
+                        if (lcr < 2) lcr = 2;
+                        Gdiplus::Color penColor(clampC(rr + delta * dir), clampC(rg + delta * dir), clampC(rb + delta * dir));
+                        Gdiplus::Pen pen(penColor, 1.0f);
+                        makeRoundRectPath(borderPath, off, off, lw, lh, lcr);
+                        graphics.DrawPath(&pen, &borderPath);
+                    }
                 }
+                // GDI+ Graphics 析构, 恢复 HDC 状态
 
+                // ── GDI 文字渲染 (ClearType 比 GDI+ 文字更清晰) ──
                 SelectObject(hdc, self->m_font);
                 SetBkMode(hdc, TRANSPARENT);
                 int x = 8;
@@ -1259,6 +1279,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
     SetProcessDPIAware();
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    // 初始化 GDI+ (用于抗锯齿圆角绘制)
+    Gdiplus::GdiplusStartupInput gdiSI;
+    Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiSI, nullptr);
+
     InitializeCriticalSection(&g_pendingLock);
 
     // 初始化 Common Controls (用于设置窗口)
@@ -1332,6 +1357,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
     delete g_candidateWin;
     delete g_engine;
     DeleteCriticalSection(&g_pendingLock);
+    Gdiplus::GdiplusShutdown(g_gdiplusToken);
     CoUninitialize();
 
     return 0;
