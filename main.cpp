@@ -1,5 +1,5 @@
 // main.cpp — 极简拼音输入法（Win32）
-// 功能: 右Shift切换中英文, 全局键盘钩子, 候选框GDI绘制, 剪贴板注入, 自学习词库, 设置窗口(纯Win32)
+// 功能: Ctrl+Shift切换中英文, 全局键盘钩子, 候选框GDI绘制, 剪贴板注入, 自学习词库, 设置窗口(纯Win32)
 // 编译: 运行 build.bat 或在 VS Developer Command Prompt 中执行上面的 cl.exe 命令
 
 #ifndef NOMINMAX
@@ -163,9 +163,9 @@ public:
     // 获取常用候选词 (sys+user merged, sorted)
     std::vector<std::pair<std::string,int>> getTopCandidates(const std::string& syl, int n) {
         std::vector<std::pair<std::string,int>> result;
-        auto it = m_dict.entries.find(syl);
-        if (it != m_dict.entries.end()) {
-            for (auto& p : it->second) result.push_back(p);
+        auto* entries = m_dict.m_trie.find(syl);
+        if (entries) {
+            for (auto& p : *entries) result.push_back({p.word, p.freq});
         }
         auto uit = m_userDict.find(syl);
         if (uit != m_userDict.end()) {
@@ -362,50 +362,73 @@ public:
         m_pageIndex = 0;
         if (m_buffer.empty()) return;
 
-        std::unordered_map<std::string, int> merged;
+        // 词典查询统一用小写 (buffer 可能含 Shift+字母 输入的大写)
+        std::string lookup = m_buffer;
+        for (char& ch : lookup) {
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+        }
 
-        // 1. 精确匹配（完整拼音）
-        auto it = m_dict.entries.find(m_buffer);
-        if (it != m_dict.entries.end()) {
-            for (auto& p : it->second) {
-                merged[p.first] = (std::max)(merged[p.first], p.second);
+        // 第 1 层：词典匹配（精确 + 前缀，保持原始 YAML 词频）
+        //          底层使用 TrieDict 前缀树, O(L+M) 非 O(N) 全表扫描
+        std::unordered_map<std::string, int> dictMatches;
+
+        // 1a. 精确匹配: O(L) 沿 trie 走到终端节点
+        auto* exactEntries = m_dict.m_trie.find(lookup);
+        if (exactEntries) {
+            for (auto& p : *exactEntries) {
+                dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
             }
         }
 
-        // 用户词库精确匹配
-        auto uit = m_userDict.find(m_buffer);
+        // 1b. 前缀匹配: O(L+M) 走到前缀节点后 DFS 收集子树词条
+        //     查询用小写 key (buffer 中的大写来自 Shift+字母)
+        {
+            int maxDepth = 0;  // 0 = 不限制
+            if (lookup.size() == 1)      maxDepth = 6;
+            else if (lookup.size() == 2) maxDepth = 5;
+            m_dict.m_trie.prefixSearch(lookup, dictMatches, 3, maxDepth);
+        }
+
+        // 用户词库精确匹配 (也用小写 key)
+        auto uit = m_userDict.find(lookup);
         if (uit != m_userDict.end()) {
             for (auto& p : uit->second) {
-                merged[p.first] = (std::max)(merged[p.first], p.second);
+                dictMatches[p.first] = (std::max)(dictMatches[p.first], p.second);
             }
         }
 
-        // 2. 首字母简拼匹配 — 使用 short_pinyin 词典
-        //    short_pinyin.txt 已经包含了丰富的简拼映射，直接通过精确匹配查找即可
-        //    不再遍历全部词库做前缀/首字母匹配，避免大词库下的 O(n) 性能问题
+        // 将词典匹配按词频降序排列（精确匹配和前缀匹配统一按权重排序）
+        std::vector<std::pair<std::string,int>> dictVec;
+        for (auto& kv : dictMatches) {
+            dictVec.push_back(kv);
+        }
+        std::sort(dictVec.begin(), dictVec.end(),
+            [](const auto& a, const auto& b){ return a.second > b.second; });
 
-        // 3. 拼音分词组合匹配 (自动将长拼音切分为多词组合)
-        //    例如 "haiyoumeiyou" → hai+you+meiyou → "还有没有"
-        if (m_buffer.size() >= 3) {
-            auto segs = segmentPinyin(m_buffer);
+        // 第 2 层：DP 拼音分词组合
+        //          例如 "haiyoumeiyou" → hai+you+meiyou → "还有没有"
+        std::vector<std::pair<std::string,int>> dpVec;
+        if (lookup.size() >= 3) {
+            auto segs = segmentPinyin(lookup);
             if (!segs.empty()) {
                 auto combined = genCombinedCandidates(segs);
+                std::unordered_map<std::string, int> dpUniq;
                 for (auto& c : combined) {
-                    if (merged.find(c.first) == merged.end()) {
-                        merged[c.first] = c.second - 300; // 分词组合略低于精确匹配
-                    } else {
-                        merged[c.first] = (std::max)(merged[c.first], c.second);
-                    }
+                    // 跳过已在词典匹配中出现的词
+                    if (dictMatches.find(c.first) != dictMatches.end()) continue;
+                    dpUniq[c.first] = (std::max)(dpUniq[c.first], c.second);
                 }
+                for (auto& kv : dpUniq) {
+                    dpVec.push_back(kv);
+                }
+                std::sort(dpVec.begin(), dpVec.end(),
+                    [](const auto& a, const auto& b){ return a.second > b.second; });
             }
         }
 
-        // 转换为候选列表并排序
-        for (auto& kv : merged) {
-            m_candidates.push_back({kv.first, kv.second});
-        }
-        std::sort(m_candidates.begin(), m_candidates.end(),
-            [](const auto& a, const auto& b){ return a.second > b.second; });
+        // 合并：词典匹配在前，DP 分词组合在后
+        m_candidates = dictVec;
+        m_candidates.insert(m_candidates.end(), dpVec.begin(), dpVec.end());
     }
 
     std::vector<std::pair<std::string,int>> getPageCandidates() {
@@ -435,9 +458,13 @@ public:
         if (globalIdx < 0 || globalIdx >= (int)m_candidates.size()) return "";
         auto& selected = m_candidates[globalIdx];
 
-        // 自学习：提升频率
-        m_userDict[m_buffer].push_back({selected.first, selected.second + 1});
-        auto& vec = m_userDict[m_buffer];
+        // 自学习：提升频率 (user dict key 统一用小写)
+        std::string lowerKey = m_buffer;
+        for (char& ch : lowerKey) {
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+        }
+        m_userDict[lowerKey].push_back({selected.first, selected.second + 1});
+        auto& vec = m_userDict[lowerKey];
         std::unordered_map<std::string, int> dedup;
         for (auto& p : vec) dedup[p.first] = (std::max)(dedup[p.first], p.second);
         vec.clear();
@@ -908,16 +935,36 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             return CallNextHookEx(g_hHook, nCode, wParam, lParam);
         }
 
-        // 忽略带有控制键的组合键（Ctrl/Alt/Win），允许快捷键正常透传
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
-            (GetAsyncKeyState(VK_MENU) & 0x8000) ||
-            (GetAsyncKeyState(VK_LWIN) & 0x8000) ||
-            (GetAsyncKeyState(VK_RWIN) & 0x8000)) {
-            return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+        // --- 读取修饰键状态 ---
+        bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool altDown  = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
+        bool winDown  = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
+                     || (GetAsyncKeyState(VK_RWIN)    & 0x8000) != 0;
+
+        // --- 切换中英文热键 (支持配置修饰键) ---
+        bool isToggleKey = false;
+        if (g_settings.toggleModifier == 0) {
+            // 无修饰键模式: 精确匹配 vk
+            isToggleKey = (vk == g_settings.toggleHotkey);
+        } else {
+            // 有修饰键模式: Shift 键匹配任一 Shift; 其他键精确匹配
+            if (g_settings.toggleHotkey == VK_SHIFT) {
+                isToggleKey = (vk == VK_LSHIFT || vk == VK_RSHIFT);
+            } else {
+                isToggleKey = (vk == g_settings.toggleHotkey);
+            }
         }
 
-        // 右Shift切换中英文
-        if (vk == VK_RSHIFT) {
+        bool modifierOk = false;
+        if (g_settings.toggleModifier == 0) {
+            modifierOk = !ctrlDown && !altDown && !winDown;
+        } else if (g_settings.toggleModifier == VK_MENU) {
+            modifierOk = altDown && !ctrlDown && !winDown;
+        } else if (g_settings.toggleModifier == VK_CONTROL) {
+            modifierOk = ctrlDown && !altDown && !winDown;
+        }
+
+        if (isToggleKey && modifierOk) {
             g_chineseMode = !g_chineseMode;
             if (!g_chineseMode) {
                 g_engine->clear();
@@ -926,7 +973,34 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             return 1;
         }
 
+        // --- 透传含 Ctrl/Win 的组合键 ---
+        if (ctrlDown || winDown) {
+            return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+        }
+
+        // --- 透传含 Alt 但非切换热键的组合 ---
+        if (altDown) {
+            return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+        }
+
         if (g_chineseMode) {
+            // Enter: 上屏原始拼音字母
+            if (vk == VK_RETURN && !g_engine->m_buffer.empty()) {
+                requestInject(utf8ToWide(g_engine->m_buffer));
+                g_engine->clear();
+                g_candidateWin->hide();
+                return 1;
+            }
+
+            // Shift（无修饰键）: 上屏原始拼音字母
+            if ((vk == VK_LSHIFT || vk == VK_RSHIFT)
+                && !g_engine->m_buffer.empty()) {
+                requestInject(utf8ToWide(g_engine->m_buffer));
+                g_engine->clear();
+                g_candidateWin->hide();
+                return 1;
+            }
+
             // Escape: 清空缓冲区
             if (vk == VK_ESCAPE) {
                 if (!g_engine->m_buffer.empty()) {
@@ -1000,7 +1074,17 @@ static LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
             // 字母键 A-Z: 添加到拼音缓冲区
             if (vk >= 'A' && vk <= 'Z') {
-                char c = (char)(vk + 32); // 统一转小写（拼音不需要大写）
+                bool capsLock = (GetKeyState(VK_CAPITAL) & 1) != 0;
+                bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+                // Caps Lock 模式下: 直接透传英文大写, 不弹出候选窗
+                if (capsLock) {
+                    return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+                }
+
+                // Shift+字母: 保留大写显示在缓冲区, 查词时忽略大小写
+                // 普通字母: 小写
+                char c = shiftDown ? (char)vk : (char)(vk + 32);
                 g_engine->addChar(c);
                 g_candidateWin->show(g_engine->m_buffer,
                     g_engine->getPageCandidates(), g_engine->m_pageIndex);
@@ -1081,7 +1165,24 @@ static LRESULT CALLBACK mainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // ==================== WinMain ====================
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
+    // ── 命令行模式: --register-system (UAC 提权后静默注册) ──
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
+        if (argv) {
+            for (int i = 0; i < argc; i++) {
+                if (wcscmp(argv[i], L"--register-system") == 0) {
+                    // 静默注册 + 退出
+                    bool ok = registerIMEToSystem(true);
+                    LocalFree(argv);
+                    return ok ? 0 : 1;
+                }
+            }
+            LocalFree(argv);
+        }
+    }
+
     g_hInst = hInstance;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     InitializeCriticalSection(&g_pendingLock);
@@ -1093,7 +1194,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     InitCommonControlsEx(&icex);
 
     // 加载设置 (使用 exe 所在目录，保证设置文件始终与程序在同一位置)
-    g_settings.loadFromFile(getExeDirectory() + "pinyin_config.ini");
+    if (!g_settings.loadFromFile(getExeDirectory() + "pinyin_config.ini")) {
+        // 首次运行: 默认 Ctrl+Shift 切换中英文
+        g_settings.toggleModifier = VK_CONTROL;
+        g_settings.toggleHotkey = VK_SHIFT;
+    } else if (!g_settings.hasToggleModifierInFile) {
+        // 旧版本配置文件迁移: 没有 toggleModifier 字段 → 升级为 Ctrl+Shift
+        g_settings.toggleModifier = VK_CONTROL;
+        g_settings.toggleHotkey = VK_SHIFT;
+        g_settings.saveToFile(getExeDirectory() + "pinyin_config.ini");
+    }
 
     // 初始化拼音引擎
     g_engine = new PinyinEngine();

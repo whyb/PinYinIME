@@ -10,6 +10,7 @@
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "Advapi32.lib")
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -81,6 +82,8 @@ struct PinyinSettings {
 
     // === 快捷键 ===
     DWORD toggleHotkey = VK_RSHIFT;
+    DWORD toggleModifier = 0;   // 修饰键: 0=无, VK_MENU=Alt, VK_CONTROL=Ctrl
+    bool hasToggleModifierInFile = false;  // 配置文件是否显式设置了修饰键
 
     // 预设皮肤
     static const struct Skin {
@@ -136,6 +139,7 @@ struct PinyinSettings {
             else if (key == "autoFreqAdjust") autoFreqAdjust = (val == "1");
             else if (key == "chinesePunctuation") chinesePunctuation = (val == "1");
             else if (key == "toggleHotkey") toggleHotkey = (DWORD)std::stoul(val);
+            else if (key == "toggleModifier") { toggleModifier = (DWORD)std::stoul(val); hasToggleModifierInFile = true; }
         }
         return true;
     }
@@ -165,6 +169,7 @@ struct PinyinSettings {
         fout << "autoFreqAdjust=" << autoFreqAdjust << "\n";
         fout << "chinesePunctuation=" << chinesePunctuation << "\n";
         fout << "toggleHotkey=" << (unsigned long)toggleHotkey << "\n";
+        fout << "toggleModifier=" << (unsigned long)toggleModifier << "\n";
         return true;
     }
 };
@@ -178,6 +183,229 @@ inline const PinyinSettings::Skin PinyinSettings::skins[] = {
     {L"暖米黄",   RGB(255,250,240), RGB(200,180,150), RGB(60,50,40),   RGB(180,120,80),  RGB(150,80,40)},
     {L"清爽蓝",   RGB(235,240,255), RGB(150,170,220), RGB(30,40,80),   RGB(60,80,200),   RGB(0,60,180)},
 };
+
+// ==================== 系统注册功能 ====================
+// 将 PinyinIME 注册到 Windows 输入法系统中
+
+// 检查当前进程是否以管理员权限运行
+inline bool IsRunningAsAdmin() {
+    BOOL isAdmin = FALSE;
+    PSID adminSid = nullptr;
+    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminSid)) {
+        CheckTokenMembership(nullptr, adminSid, &isAdmin);
+        FreeSid(adminSid);
+    }
+    return isAdmin != FALSE;
+}
+
+// 通过 UAC 提权重启自身进程 (用于执行需管理员权限的操作)
+inline bool RelaunchWithUAC(const wchar_t* extraArgs) {
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";        // 触发 UAC 提权对话框
+    sei.lpFile = exePath;
+    sei.lpParameters = extraArgs;
+    sei.nShow = SW_SHOWNORMAL;
+
+    if (ShellExecuteExW(&sei)) {
+        if (sei.hProcess) {
+            WaitForSingleObject(sei.hProcess, 15000); // 等 15 秒
+            DWORD exitCode = 0;
+            GetExitCodeProcess(sei.hProcess, &exitCode);
+            CloseHandle(sei.hProcess);
+            return exitCode == 0;
+        }
+        return true;
+    }
+    // 用户取消 UAC 弹窗 (ERROR_CANCELLED)
+    return false;
+}
+
+// 将 PinyinIME 注册到系统 (写入 4 项注册表)
+// silent=true: 静默模式 (用于 --register-system 命令行), 不弹总结框
+// 返回 true 表示所有步骤均成功
+inline bool registerIMEToSystem(bool silent) {
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
+    int okCount = 0, failCount = 0, skipCount = 0;
+    std::wstring details;
+
+    auto logOk   = [&](const wchar_t* m) { okCount++;   details += L"  ✅ "; details += m; details += L"\n"; };
+    auto logFail = [&](const wchar_t* m, LONG ec=0) { failCount++; details += L"  ❌ "; details += m;
+        if (ec) { details += L" (代码 "; details += std::to_wstring(ec); details += L")"; }
+        details += L"\n"; };
+    auto logSkip = [&](const wchar_t* m) { skipCount++; details += L"  ⏭️ "; details += m; details += L"\n"; };
+
+    // ── 1. 开机自启动 (HKCU) ────────────────────────────
+    {
+        HKEY hKey = nullptr;
+        LONG res = RegCreateKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_WRITE | KEY_SET_VALUE, nullptr, &hKey, nullptr);
+        if (res == ERROR_SUCCESS) {
+            DWORD dataLen = (DWORD)(wcslen(exePath) + 1) * sizeof(wchar_t);
+            res = RegSetValueExW(hKey, L"PinyinIME", 0, REG_SZ,
+                (const BYTE*)exePath, dataLen);
+            RegCloseKey(hKey);
+            (res == ERROR_SUCCESS) ? logOk(L"开机自启动 已注册")
+                                   : logFail(L"开机自启动 写入失败", res);
+        } else {
+            logFail(L"开机自启动 无法打开注册表项", res);
+        }
+    }
+
+    // ── 2. 键盘布局预加载 (HKCU) ───────────────────────
+    {
+        HKEY hKey = nullptr;
+        LONG res = RegCreateKeyExW(HKEY_CURRENT_USER,
+            L"Keyboard Layout\\Preload",
+            0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_SET_VALUE, nullptr, &hKey, nullptr);
+        if (res == ERROR_SUCCESS) {
+            // 检查是否已注册过，避免重复添加
+            std::wstring targetId = L"E0800804";
+            bool alreadyExists = false;
+            for (int slot = 1; slot <= 20; slot++) {
+                std::wstring vn = std::to_wstring(slot);
+                wchar_t data[64] = {};
+                DWORD ds = sizeof(data);
+                if (RegQueryValueExW(hKey, vn.c_str(), nullptr, nullptr,
+                        (LPBYTE)data, &ds) == ERROR_SUCCESS && targetId == data) {
+                    alreadyExists = true; break;
+                }
+            }
+            if (alreadyExists) {
+                logOk(L"键盘布局 已存在, 跳过");
+            } else {
+                int maxSlot = 0;
+                for (int s = 1; s <= 20; s++) {
+                    std::wstring vn = std::to_wstring(s);
+                    DWORD d = 0, ds = sizeof(d);
+                    if (RegQueryValueExW(hKey, vn.c_str(), nullptr, nullptr,
+                            (LPBYTE)&d, &ds) == ERROR_SUCCESS) { if (s > maxSlot) maxSlot = s; }
+                }
+                std::wstring sn = std::to_wstring(maxSlot + 1);
+                res = RegSetValueExW(hKey, sn.c_str(), 0, REG_SZ,
+                    (const BYTE*)targetId.c_str(),
+                    (DWORD)((targetId.size() + 1) * sizeof(wchar_t)));
+                (res == ERROR_SUCCESS) ? logOk(L"键盘布局 已注册")
+                                       : logFail(L"键盘布局 写入失败", res);
+            }
+            RegCloseKey(hKey);
+        } else {
+            logFail(L"键盘布局 无法打开注册表项", res);
+        }
+    }
+
+    // ── 3. TSF 配置文件桩 (HKCU) ───────────────────────
+    {
+        const wchar_t* clsid = L"{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}";
+        std::wstring tipPath = L"Software\\Microsoft\\CTF\\TIP\\";
+        tipPath += clsid;
+
+        HKEY hKey = nullptr;
+        LONG res = RegCreateKeyExW(HKEY_CURRENT_USER, tipPath.c_str(),
+            0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_WRITE | KEY_SET_VALUE, nullptr, &hKey, nullptr);
+        if (res == ERROR_SUCCESS) {
+            RegSetValueExW(hKey, L"Display Description", 0, REG_SZ,
+                (const BYTE*)L"PinyinIME", 20);
+            RegSetValueExW(hKey, nullptr, 0, REG_SZ,
+                (const BYTE*)L"PinyinIME 拼音输入法", 36);
+
+            std::wstring catPath = tipPath;
+            catPath += L"\\Category\\Item\\{34745C63-B2F0-4784-8B67-5E12C8701A31}";
+            HKEY hCat = nullptr;
+            LONG catRes = RegCreateKeyExW(HKEY_CURRENT_USER, catPath.c_str(),
+                0, nullptr, REG_OPTION_NON_VOLATILE,
+                KEY_WRITE | KEY_SET_VALUE, nullptr, &hCat, nullptr);
+            if (hCat) RegCloseKey(hCat);
+            RegCloseKey(hKey);
+            (catRes == ERROR_SUCCESS) ? logOk(L"TSF 输入法配置文件 已注册")
+                                       : logFail(L"TSF 输入法配置文件 写入失败", catRes);
+        } else {
+            logFail(L"TSF 输入法配置文件 无法打开注册表项", res);
+        }
+    }
+
+    // ── 4. 系统级键盘布局 (HKLM, 需管理员) ────────────
+    {
+        LONG hklmErr = 0;
+        {
+            HKEY hKey = nullptr;
+            LONG res = RegCreateKeyExW(HKEY_LOCAL_MACHINE,
+                L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\E0800804",
+                0, nullptr, REG_OPTION_NON_VOLATILE,
+                KEY_WRITE | KEY_SET_VALUE, nullptr, &hKey, nullptr);
+            if (res == ERROR_SUCCESS) {
+                RegSetValueExW(hKey, L"Layout File", 0, REG_SZ,
+                    (const BYTE*)L"kbdus.dll", 20);
+                RegSetValueExW(hKey, L"Layout Text", 0, REG_SZ,
+                    (const BYTE*)L"PinyinIME Chinese", 36);
+                RegSetValueExW(hKey, L"Layout Display Name", 0, REG_SZ,
+                    (const BYTE*)L"PinyinIME 拼音输入法", 36);
+                RegCloseKey(hKey);
+                logOk(L"系统级键盘布局 已注册 (HKLM)");
+            } else {
+                hklmErr = res;
+            }
+        }
+
+        if (hklmErr == ERROR_ACCESS_DENIED && hklmErr != 0) {
+            // 权限不足 → 询问用户是否 UAC 提权 (静默模式直接提权)
+            bool elevate = silent;
+            if (!silent) {
+                int mb = MessageBoxW(nullptr,
+                    L"注册系统级键盘布局需要管理员权限。\n\n"
+                    L"是否通过 UAC 提权继续？\n"
+                    L"(选择「否」将跳过此步骤，输入法核心功能不受影响)",
+                    L"PinyinIME — 需要管理员权限",
+                    MB_YESNO | MB_ICONQUESTION);
+                elevate = (mb == IDYES);
+            }
+            if (elevate) {
+                if (RelaunchWithUAC(L"--register-system")) {
+                    logOk(L"系统级键盘布局 已注册 (UAC 提权)");
+                } else {
+                    logSkip(L"系统级键盘布局 用户取消或提权失败");
+                }
+            } else {
+                logSkip(L"系统级键盘布局 已跳过 (无管理员权限)");
+            }
+        } else if (hklmErr != 0) {
+            logFail(L"系统级键盘布局 注册失败", hklmErr);
+        }
+    }
+
+    // ── 显示结果 (非静默模式) ──────────────────────────
+    if (!silent) {
+        std::wstring summary;
+        summary += L"成功: " + std::to_wstring(okCount) + L" 项";
+        if (failCount > 0) summary += L", 失败: " + std::to_wstring(failCount) + L" 项";
+        if (skipCount > 0) summary += L", 跳过: " + std::to_wstring(skipCount) + L" 项";
+
+        std::wstring msg = L"PinyinIME 系统注册结果\n\n" + summary + L"\n\n" + details;
+        msg += L"\n━━━━━━━━━━━━━━━━━━━━\n";
+        msg += L"💡 提示:\n";
+        msg += L"• HKCU 注册项无需管理员权限\n";
+        msg += L"• 系统级键盘布局 (HKLM) 需要管理员权限\n";
+        msg += L"• 即使跳过 HKLM，输入法仍可正常使用\n";
+        msg += L"• 系统托盘可找到 PinyinIME 图标\n";
+
+        MessageBoxW(nullptr, msg.c_str(),
+            L"PinyinIME 系统注册", MB_OK | MB_ICONINFORMATION);
+    }
+
+    return failCount == 0;
+}
 
 // ==================== 前向声明 ====================
 // 这些函数在 main.cpp 中实现 (在完整的类定义之后)
@@ -704,6 +932,33 @@ struct SettingsWindow {
         addCheck(L"词频自动调整", 603, 370, gy, 140, 20, m_temp.autoFreqAdjust);
         gy += 30;
 
+        // === 系统设置组 ===
+        addLabel(L"━━ 系统 ━━", 15, gy, 200, 18);
+        gy += 22;
+
+        addLabel(L"切换热键:", 20, gy, 80, 20);
+        HWND hHotkey = addCombo(406, 100, gy - 2, 160, 200);
+        SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Ctrl + Shift");
+        SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Alt + Shift");
+        SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Right Shift (单独)");
+        SendMessageW(hHotkey, CB_ADDSTRING, 0, (LPARAM)L"Ctrl + Space");
+        // 根据当前设置选中正确的项
+        {
+            int hotkeySel = 1; // 默认: Ctrl+Shift
+            if (m_temp.toggleModifier == VK_MENU && m_temp.toggleHotkey == VK_SHIFT)
+                hotkeySel = 0;
+            else if (m_temp.toggleModifier == 0 && m_temp.toggleHotkey == VK_RSHIFT)
+                hotkeySel = 2;
+            else if (m_temp.toggleModifier == VK_CONTROL && m_temp.toggleHotkey == VK_SPACE)
+                hotkeySel = 3;
+            SendMessageW(hHotkey, CB_SETCURSEL, hotkeySel, 0);
+        }
+        gy += 28;
+
+        addButton(L"📌 注册输入法到系统", 910, 20, gy, 180, 26);
+        addLabel(L"将 PinyinIME 注册为系统输入法并设置开机自启", 210, gy + 3, 300, 20);
+        gy += 32;
+
         // === 底部按钮 ===
         addButton(L"✅ 保存设置", 901, 250, gy, 100, 28);
         addButton(L"❌ 取消", 902, 360, gy, 80, 28);
@@ -780,6 +1035,11 @@ struct SettingsWindow {
                 return 0;
             }
 
+            if (id == 910) { // 注册输入法到系统
+                registerIMEToSystem(false);
+                return 0;
+            }
+
             if (id == 901) { // 保存
                 self->m_temp.useTraditional = (IsDlgButtonChecked(hwnd, 401) == BST_CHECKED);
                 self->m_temp.verticalLayout = (IsDlgButtonChecked(hwnd, 404) == BST_CHECKED);
@@ -802,6 +1062,29 @@ struct SettingsWindow {
                 self->m_temp.smartCorrection = (IsDlgButtonChecked(hwnd, 601) == BST_CHECKED);
                 self->m_temp.autoWordCreate = (IsDlgButtonChecked(hwnd, 602) == BST_CHECKED);
                 self->m_temp.autoFreqAdjust = (IsDlgButtonChecked(hwnd, 603) == BST_CHECKED);
+
+                // 读取切换热键
+                {
+                    int hotkeySel = (int)SendMessageW(GetDlgItem(hwnd, 406), CB_GETCURSEL, 0, 0);
+                    switch (hotkeySel) {
+                        case 0: // Ctrl+Shift
+                            self->m_temp.toggleModifier = VK_CONTROL;
+                            self->m_temp.toggleHotkey = VK_SHIFT;
+                            break;
+                        case 1: // Alt+Shift
+                            self->m_temp.toggleModifier = VK_MENU;
+                            self->m_temp.toggleHotkey = VK_SHIFT;
+                            break;
+                        case 2: // Right Shift (单独)
+                            self->m_temp.toggleModifier = 0;
+                            self->m_temp.toggleHotkey = VK_RSHIFT;
+                            break;
+                        case 3: // Ctrl+Space
+                            self->m_temp.toggleModifier = VK_CONTROL;
+                            self->m_temp.toggleHotkey = VK_SPACE;
+                            break;
+                    }
+                }
 
                 // 应用到全局设置
                 g_settings = self->m_temp;

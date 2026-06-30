@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(PinyinIME VERSION 1.0 LANGUAGES CXX)
 
+# MSVC 静态 CRT (/MT) — 需要 CMake 3.15+ 策略
+if(MSVC)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
 # ==================== 编译选项 ====================
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,12 +21,14 @@ endif()
 # ==================== 源文件 ====================
 set(SOURCES
     main.cpp
+    trie_dict.cpp
 )
 
 set(HEADERS
     dictionary.h
     settings.h
     s2t_data.h
+    trie_dict.h
 )
 
 # ==================== 可执行文件 ====================
@@ -42,22 +49,22 @@ target_link_libraries(PinyinIME PRIVATE
 )
 
 # ==================== 安装规则 ====================
-# 安装 exe + 运行时需要的词典文件
+# 安装 exe + rime-ice 词库
 install(TARGETS PinyinIME RUNTIME DESTINATION .)
 
-install(FILES
-    single_chars.txt
-    words.txt
-    short_pinyin.txt
-    DESTINATION .
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/rime-ice/cn_dicts/
+    DESTINATION cn_dicts
+    FILES_MATCHING PATTERN "*.dict.yaml"
 )
 
 # ==================== 自定义目标 ====================
-# 重新生成词典 (需要 Python 3, 需要先拉取 rime-ice submodule)
-add_custom_target(generate_dicts
-    COMMAND python convert_rime_dicts.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Converting rime-ice dictionaries to PinyinIME format"
+# 复制 rime-ice 词库到构建输出目录 (供调试运行)
+add_custom_command(TARGET PinyinIME POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:PinyinIME>/cn_dicts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/rime-ice/cn_dicts"
+        "$<TARGET_FILE_DIR:PinyinIME>/cn_dicts"
+    COMMENT "Copying rime-ice dictionaries to build output..."
 )
 
 # ==================== 平台特定 ====================
