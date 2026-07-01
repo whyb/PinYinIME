@@ -114,6 +114,7 @@ jobs:
             | 文件 | 说明 |
             |---|---|
             | `PinyinIME.exe` | 主程序 (x64, 静态链接 CRT) |
+            | `PinyinIMETSF.dll` | 注册到系统TSF需要 |
             | `cn_dicts/` | rime-ice 原版词库 (8105 + 41448 + base + ext + others + tencent) |
             | `pinyin_config.ini` | 默认配置文件 |
             | `user.dict` | 用户自学习词库 |
