@@ -2,41 +2,45 @@
 chcp 65001 >nul 2>&1
 
 echo ==========================================
-echo   PinyinIME Build Script
+echo   PinyinIME Build Script (CMake + MSVC)
 echo ==========================================
 echo.
 
-where cl.exe >nul 2>&1
+where cmake.exe >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] cl.exe not found!
-    echo Please run this in VS2022 Developer Command Prompt.
+    echo [ERROR] cmake.exe not found!
+    echo Please install CMake and run this in VS2022 Developer Command Prompt.
     pause
     exit /b 1
 )
 
-echo [1/2] Compiling...
-cl.exe /utf-8 /O2 /MT /EHsc /std:c++17 /DUNICODE /D_UNICODE main.cpp trie_dict.cpp /Fe:PinyinIME.exe user32.lib gdi32.lib kernel32.lib imm32.lib comctl32.lib shell32.lib oleacc.lib Ole32.lib OleAut32.lib UIAutomationCore.lib
-
+echo [1/2] Configuring CMake...
+cmake -B build -G "Visual Studio 17 2022" -A x64
 if %ERRORLEVEL% NEQ 0 (
-    echo.
+    echo [ERROR] CMake configure failed!
+    pause
+    exit /b 1
+)
+
+echo.
+echo [2/2] Building Release...
+cmake --build build --config Release
+if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build failed!
     pause
     exit /b 1
 )
 
 echo.
-echo [2/2] Copying rime-ice dictionaries...
-if exist cn_dicts rmdir /s /q cn_dicts
-xcopy /e /i /q rime-ice\cn_dicts cn_dicts >nul
-echo   Done: cn_dicts\ copied to output
-
-echo.
 echo ==========================================
-echo   Build OK: PinyinIME.exe
+echo   Build OK ^^!
+echo   DLL: build\Release\PinyinIMETSF.dll
+echo   EXE: build\Release\PinyinIME.exe
 echo ==========================================
 echo.
 echo Usage:
-echo   1. Run PinyinIME.exe (as Administrator)
-echo   2. Ctrl+Shift to toggle Chinese/English
-echo   3. Type pinyin, Space to confirm, 1-9 to select
+echo   1. Run build\Release\PinyinIME.exe
+echo   2. Open Settings -^> click "Register IME to System"
+echo   3. Add PinyinIME in Windows Language Settings
+echo   4. Use Win+Space to switch to PinyinIME
 echo.

@@ -62,8 +62,8 @@
 ## 编译
 
 ### 环境要求
-- Windows 7+
-- Visual Studio 2012+
+- Windows 8+
+- Visual Studio 2019+
 
 ### 方式一：CMake
 

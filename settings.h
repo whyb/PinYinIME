@@ -9,6 +9,9 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <gdiplus.h>
+#include <msctf.h>
+#include <combaseapi.h>
+#pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "Advapi32.lib")
@@ -236,6 +239,64 @@ inline bool RelaunchWithUAC(const wchar_t* extraArgs) {
     return false;
 }
 
+// ==================== 标准 TSF 注册功能 ====================
+
+// 请将这里的 GUID 替换为你输入法实际的 GUID
+// 示例中使用的是你代码里的 {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+static const GUID CLSID_PinyinIME = { 0xA1B2C3D4, 0xE5F6, 0x7890, { 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x90 } };
+
+// 输入法配置文件的 GUID，可以随机生成一个，但必须固定
+static const GUID GUID_PinyinProfile = { 0xB2C3D4E5, 0xF6A1, 0x7890, { 0xBC, 0xDE, 0xF1, 0x23, 0x45, 0x67, 0x89, 0x0A } };
+
+inline HRESULT RegisterTSFProfile(const wchar_t* dllPath) {
+    // 初始化 COM 库（如果外部没初始化的话）
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool coInit = SUCCEEDED(hr);
+
+    ITfInputProcessorProfiles* pProfiles = nullptr;
+    hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+        IID_ITfInputProcessorProfiles, (void**)&pProfiles);
+
+    if (SUCCEEDED(hr)) {
+        // 1. 注册输入法文本服务配置文件（对应简体中文：0x0804）
+        // 这一步会自动在系统的语言包及 TSF 内部框架中建立正确的信任与索引关系
+        hr = pProfiles->RegisterProfile(
+            CLSID_PinyinIME,
+            GUID_PinyinProfile,
+            L"PinyinIME",                   // 语言栏和设置中显示的名称
+            (ULONG)wcslen(L"PinyinIME"),
+            dllPath,                        // 你的输入法 DLL 的绝对路径
+            (ULONG)wcslen(dllPath),
+            0,                              // 图标文件的资源 ID（没有就填0）
+            0x0804                          // 关键：0x0804 代表简体中文 (zh-CN)
+        );
+
+        if (SUCCEEDED(hr)) {
+            // 2. 将输入法分类（Category）注册为“键盘”类型输入法
+            // 如果不注册这个分类，系统虽然能看到它，但不会把它归类到“键盘布局”中
+            ITfCategoryMgr* pCategoryMgr = nullptr;
+            hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER,
+                IID_ITfCategoryMgr, (void**)&pCategoryMgr);
+            if (SUCCEEDED(hr)) {
+                // 声明它是一个标准的 KEYBOARD TIP
+                pCategoryMgr->RegisterCategory(CLSID_PinyinIME, GUID_TFCAT_TIP_KEYBOARD, CLSID_PinyinIME);
+
+                // 允许在 Windows 10/11 的安全模式（如锁屏界面、UAC弹窗）下运行（可选但强烈建议）
+                pCategoryMgr->RegisterCategory(CLSID_PinyinIME, GUID_TFCAT_TIPCAP_SECUREMODE, CLSID_PinyinIME);
+
+                // 允许在 Windows 现代 UWP/Metro 应用中运行
+                pCategoryMgr->RegisterCategory(CLSID_PinyinIME, GUID_TFCAT_TIP_TEXTEFFECT, CLSID_PinyinIME);
+
+                pCategoryMgr->Release();
+            }
+        }
+        pProfiles->Release();
+    }
+
+    if (coInit) CoUninitialize();
+    return hr;
+}
+
 // 将 PinyinIME 注册到系统 (写入 4 项注册表)
 // silent=true: 静默模式 (用于 --register-system 命令行), 不弹总结框
 // 返回 true 表示所有步骤均成功
@@ -410,7 +471,7 @@ inline bool registerIMEToSystem(bool silent) {
         msg += L"• 系统托盘可找到 PinyinIME 图标\n";
 
         MessageBoxW(nullptr, msg.c_str(),
-            L"PinyinIME 系统注册", MB_OK | MB_ICONINFORMATION);
+            L"PinyinIME 系统注册", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
     }
 
     return failCount == 0;
@@ -546,17 +607,15 @@ struct SettingsDialog {
             SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
 
-            SetTextColor(hdc, g_tempSettings.inputColor);
-            TextOutW(hdc, 5, 5, L"[nihao] ", 8);
-
+            // 候选词 (从左边距开始, 无拼音前缀)
             SetTextColor(hdc, g_tempSettings.indexColor);
-            TextOutW(hdc, 75, 5, L"1.", 2);
+            TextOutW(hdc, 8, 5, L"1.", 2);
             SetTextColor(hdc, g_tempSettings.textColor);
-            TextOutW(hdc, 90, 5, L"你好", 2);
+            TextOutW(hdc, 23, 5, L"你好", 2);
             SetTextColor(hdc, g_tempSettings.indexColor);
-            TextOutW(hdc, 125, 5, L"2.", 2);
+            TextOutW(hdc, 58, 5, L"2.", 2);
             SetTextColor(hdc, g_tempSettings.textColor);
-            TextOutW(hdc, 140, 5, L"泥嚎", 2);
+            TextOutW(hdc, 73, 5, L"泥嚎", 2);
 
             DeleteObject(hFont);
             EndPaint(hwnd, &ps);
@@ -865,12 +924,8 @@ struct SettingsWindow {
             int textY = borderW + pad;
             int x = S(8);
 
-            // 拼音缓冲区
-            SetTextColor(hdc, self->m_temp.inputColor);
-            TextOutW(hdc, x, textY, L"[nihao] ", 8);
-            SIZE sz; GetTextExtentPoint32W(hdc, L"[nihao] ", 8, &sz);
-            x += sz.cx + S(5);
-
+            // 候选词 (从左边距开始, 无拼音前缀)
+            SIZE sz;
             // 候选词 1
             SetTextColor(hdc, self->m_temp.indexColor);
             TextOutW(hdc, x, textY, L"1.", 2);

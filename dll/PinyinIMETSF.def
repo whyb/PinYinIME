@@ -1,0 +1,8 @@
+; PinyinIMETSF.def — 导出 COM DLL 入口点
+; 确保 regsvr32.exe 和系统能调用 DllRegisterServer / DllGetClassObject 等
+LIBRARY PinyinIMETSF
+EXPORTS
+    DllRegisterServer     PRIVATE
+    DllUnregisterServer   PRIVATE
+    DllGetClassObject     PRIVATE
+    DllCanUnloadNow       PRIVATE

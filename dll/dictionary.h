@@ -15,14 +15,17 @@
 #include <cctype>
 #include "trie_dict.h"
 
-// 获取 exe 所在的文件夹路径（带末尾反斜杠）
-inline std::string getExeDirectory() {
+// 获取 DLL 所在的文件夹路径（带末尾反斜杠）
+// 用 g_hDllInst 而非 nullptr，因为 DLL 加载到其他进程时 nullptr 返回宿主 EXE 的路径
+extern HINSTANCE g_hDllInst;
+
+inline std::string getDictDirectory() {
     char path[MAX_PATH] = { 0 };
-    GetModuleFileNameA(nullptr, path, MAX_PATH);
-    std::string exePath(path);
-    size_t pos = exePath.find_last_of("\\/");
+    GetModuleFileNameA(g_hDllInst, path, MAX_PATH);
+    std::string dllPath(path);
+    size_t pos = dllPath.find_last_of("\\/");
     if (pos != std::string::npos) {
-        return exePath.substr(0, pos + 1);
+        return dllPath.substr(0, pos + 1);
     }
     return "";
 }
@@ -213,7 +216,7 @@ struct PinyinDict {
         m_trie.clear();
         charToPinyins.clear();
 
-        std::string dir = getExeDirectory() + "cn_dicts\\";
+        std::string dir = getDictDirectory() + "cn_dicts\\";
 
         // 第 1 步: 加载字表 (同时构建字符→拼音映射)
         int n1 = loadRimeFile(dir + "8105.dict.yaml", false, true);
