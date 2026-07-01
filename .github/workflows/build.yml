@@ -68,6 +68,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
           Copy-Item build\Release\PinyinIME.exe -Destination $staging\
+          Copy-Item build\Release\PinyinIMETSF.dll -Destination $staging\
           Copy-Item build\Release\cn_dicts\ -Destination $staging\cn_dicts\ -Recurse
           Copy-Item pinyin_config.ini -Destination $staging\
           Copy-Item user.dict -Destination $staging\

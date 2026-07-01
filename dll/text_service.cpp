@@ -532,13 +532,14 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
 // ITfKeyEventSink::OnSetFocus — 焦点丢失时清理候选窗口
 STDMETHODIMP CPinyinTextService::OnSetFocus(BOOL fForeground) {
     if (!fForeground) {
-        // 失去焦点: 取消组合 + 隐藏候选窗口
+        // 失去焦点: 取消组合 + 隐藏候选窗口 + 清除位置缓存
         if (!m_engine.m_buffer.empty()) {
             m_engine.clear();
         }
         if (m_bComposing) {
             cancelComposition();
         }
+        m_candidateWin.m_hasTsfCaretPos = false;
         hideCandidateWindow();
     }
     return S_OK;
@@ -550,6 +551,7 @@ STDMETHODIMP CPinyinTextService::OnCompositionTerminated(TfEditCookie, ITfCompos
         m_pComposition->Release();
         m_pComposition = nullptr;
         m_bComposing = false;
+        m_candidateWin.m_hasTsfCaretPos = false;
     }
     return S_OK;
 }
@@ -654,6 +656,20 @@ void CPinyinTextService::startComposition(ITfContext* pContext, TfEditCookie ec)
             // 移动选区到末尾
             tfSel.range->Collapse(ec, TF_ANCHOR_END);
             pContext->SetSelection(ec, 1, &tfSel);
+
+            // TSF 标准: 用 GetTextExt 获取光标屏幕坐标,
+            // 供候选窗口定位 (解决 Firefox 等非 Win32 caret 应用的定位问题)
+            ITfContextView* pView = nullptr;
+            if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView) {
+                RECT rc = {};
+                BOOL fClipped = FALSE;
+                if (SUCCEEDED(pView->GetTextExt(ec, tfSel.range, &rc, &fClipped))) {
+                    m_candidateWin.m_tsfCaretPos.x = rc.left;
+                    m_candidateWin.m_tsfCaretPos.y = rc.bottom;
+                    m_candidateWin.m_hasTsfCaretPos = true;
+                }
+                pView->Release();
+            }
         }
         pCompCtx->Release();
     }
@@ -681,6 +697,19 @@ void CPinyinTextService::updateComposition(ITfContext* pContext, TfEditCookie ec
         tfSel.style.fInterimChar = FALSE;
         pContext->SetSelection(ec, 1, &tfSel);
 
+        // TSF 标准: 用 GetTextExt 获取光标屏幕坐标, 缓存供候选窗口定位
+        ITfContextView* pView = nullptr;
+        if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView) {
+            RECT rc = {};
+            BOOL fClipped = FALSE;
+            if (SUCCEEDED(pView->GetTextExt(ec, pRange, &rc, &fClipped))) {
+                m_candidateWin.m_tsfCaretPos.x = rc.left;
+                m_candidateWin.m_tsfCaretPos.y = rc.bottom;
+                m_candidateWin.m_hasTsfCaretPos = true;
+            }
+            pView->Release();
+        }
+
         pRange->Release();
     }
 }
@@ -706,6 +735,8 @@ void CPinyinTextService::commitComposition(const std::wstring& text) {
 void CPinyinTextService::cancelComposition() {
     m_pendingCommit = L"";
     m_pendingAction = ACT_CANCEL;
+    // 清除 TSF 光标位置缓存
+    m_candidateWin.m_hasTsfCaretPos = false;
 
     ITfDocumentMgr* pDocMgr = nullptr;
     if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr)) && pDocMgr) {
@@ -745,6 +776,17 @@ STDMETHODIMP CPinyinEditSession::DoEditSession(TfEditCookie ec) {
                     pRange->SetText(ec, 0,
                         svc->m_pendingCommit.c_str(),
                         (LONG)svc->m_pendingCommit.size());
+                    // TSF 标准: 提交后必须将选区置于已提交文本之后,
+                    // 否则下一次 startComposition 会在错误位置插入,
+                    // 导致输入倒序 (如记事本、资源管理器地址栏)
+                    pRange->Collapse(ec, TF_ANCHOR_END);
+                    TF_SELECTION tfSel;
+                    tfSel.range = pRange;
+                    tfSel.style.ase = TF_AE_END;
+                    tfSel.style.fInterimChar = FALSE;
+                    if (pContext) {
+                        pContext->SetSelection(ec, 1, &tfSel);
+                    }
                 } else {
                     pRange->SetText(ec, 0, L"", 0);
                 }

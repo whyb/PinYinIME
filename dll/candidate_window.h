@@ -26,6 +26,10 @@ public:
     HRGN m_roundRgn = nullptr;
     int m_roundR = 10;
     PinyinSettings* m_pSettings = nullptr;
+    // TSF 标准: 在 edit session 内通过 ITfContextView::GetTextExt 拿到准确坐标,
+    // 缓存后供 getCaretPosition 优先使用 (解决 Firefox 等不使用 Win32 caret 的应用)
+    POINT m_tsfCaretPos = {0, 0};
+    bool m_hasTsfCaretPos = false;
 
     COLORREF getBgColor()     { return m_pSettings ? m_pSettings->bgColor     : RGB(0xF0,0xF5,0xF0); }
     COLORREF getBorderColor() { return m_pSettings ? m_pSettings->borderColor : RGB(0x96,0xC6,0x96); }
@@ -65,8 +69,14 @@ public:
         POINT pt = {0, 0};
         bool found = false;
 
+        // 方法 0: TSF GetTextExt 缓存 (最符合 TSF 规范, 解决 Firefox/Chrome 等非 Win32 caret 应用)
+        if (m_hasTsfCaretPos && (m_tsfCaretPos.x != 0 || m_tsfCaretPos.y != 0)) {
+            pt = m_tsfCaretPos;
+            found = true;
+        }
+
         // 方法 1: Win32 标准光标 (同一线程, 最可靠)
-        {
+        if (!found) {
             GUITHREADINFO gti = {};
             gti.cbSize = sizeof(gti);
             if (GetGUIThreadInfo(GetCurrentThreadId(), &gti)) {
