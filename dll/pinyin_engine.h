@@ -37,6 +37,10 @@ public:
         loadUserDict();
     }
 
+    void shutdown() {
+        m_dict.shutdown();
+    }
+
     void loadUserDict() {
         std::string dir = getModuleDirectory(g_hDllInst);
         std::ifstream fin(dir + "user.dict");
@@ -90,8 +94,9 @@ public:
     }
 
     std::vector<std::pair<std::string,int>> getTopCandidates(const std::string& syl, int n) {
+        m_dict.trySwapBackground();  // 检查后台词库是否加载完成
         std::vector<std::pair<std::string,int>> result;
-        auto* entries = m_dict.m_trie.find(syl);
+        auto* entries = m_dict.find(syl);
         if (entries) for (auto& p : *entries) result.push_back({p.word, p.freq});
         auto uit = m_userDict.find(syl);
         if (uit != m_userDict.end()) for (auto& p : uit->second) result.push_back(p);
@@ -214,6 +219,7 @@ public:
     }
 
     void updateCandidates() {
+        m_dict.trySwapBackground();  // 检查后台词库是否加载完成
         m_candidates.clear();
         m_pageIndex = 0;
         if (m_buffer.empty()) return;
@@ -221,10 +227,10 @@ public:
         for (char& ch : lookup) if (ch >= 'A' && ch <= 'Z') ch += 32;
 
         std::unordered_map<std::string, int> dictMatches;
-        auto* exactEntries = m_dict.m_trie.find(lookup);
+        auto* exactEntries = m_dict.find(lookup);
         if (exactEntries) for (auto& p : *exactEntries) dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
         { int maxDepth = 0; if (lookup.size() == 1) maxDepth = 6; else if (lookup.size() == 2) maxDepth = 5;
-          m_dict.m_trie.prefixSearch(lookup, dictMatches, 3, maxDepth); }
+          m_dict.prefixSearch(lookup, dictMatches, 3, maxDepth); }
         auto uit = m_userDict.find(lookup);
         if (uit != m_userDict.end()) for (auto& p : uit->second) dictMatches[p.first] = (std::max)(dictMatches[p.first], p.second);
 

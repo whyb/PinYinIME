@@ -41,10 +41,15 @@ struct PinyinSettings {
     bool autoFreqAdjust   = true;
     bool chinesePunctuation = true;
 
-    // === 快捷键 ===
-    DWORD toggleHotkey = VK_RSHIFT;
-    DWORD toggleModifier = 0;   // 修饰键: 0=无, VK_MENU=Alt, VK_CONTROL=Ctrl
-    bool hasToggleModifierInFile = false;
+    // === 候选翻页 ===
+    bool enableMinusEqualsPage = true;   // 启用 -/= 翻页
+    bool enableCommaPeriodPage = true;   // 启用 ,/. (</>)翻页
+    bool enableTabPage = true;           // 启用 Tab/Shift+Tab 翻页
+    bool enableBracketPage = true;       // 启用 [/] 翻页
+    // === 候选窗显示 ===
+    bool showSettingsGear = true;        // 显示设置齿轮 ⚙
+    bool showPageButtons = true;         // 显示翻页按钮 ◀▶
+
 
     // 预设皮肤
     static const struct Skin {
@@ -99,8 +104,12 @@ struct PinyinSettings {
             else if (key == "autoWordCreate") autoWordCreate = (val == "1");
             else if (key == "autoFreqAdjust") autoFreqAdjust = (val == "1");
             else if (key == "chinesePunctuation") chinesePunctuation = (val == "1");
-            else if (key == "toggleHotkey") toggleHotkey = (DWORD)std::stoul(val);
-            else if (key == "toggleModifier") { toggleModifier = (DWORD)std::stoul(val); hasToggleModifierInFile = true; }
+            else if (key == "enableMinusEqualsPage") enableMinusEqualsPage = (val == "1");
+            else if (key == "enableCommaPeriodPage") enableCommaPeriodPage = (val == "1");
+            else if (key == "enableTabPage") enableTabPage = (val == "1");
+            else if (key == "enableBracketPage") enableBracketPage = (val == "1");
+            else if (key == "showSettingsGear") showSettingsGear = (val == "1");
+            else if (key == "showPageButtons") showPageButtons = (val == "1");
         }
         return true;
     }
@@ -130,8 +139,12 @@ struct PinyinSettings {
         fout << "autoWordCreate=" << autoWordCreate << "\n";
         fout << "autoFreqAdjust=" << autoFreqAdjust << "\n";
         fout << "chinesePunctuation=" << chinesePunctuation << "\n";
-        fout << "toggleHotkey=" << (unsigned long)toggleHotkey << "\n";
-        fout << "toggleModifier=" << (unsigned long)toggleModifier << "\n";
+        fout << "enableMinusEqualsPage=" << enableMinusEqualsPage << "\n";
+        fout << "enableCommaPeriodPage=" << enableCommaPeriodPage << "\n";
+        fout << "enableTabPage=" << enableTabPage << "\n";
+        fout << "enableBracketPage=" << enableBracketPage << "\n";
+        fout << "showSettingsGear=" << showSettingsGear << "\n";
+        fout << "showPageButtons=" << showPageButtons << "\n";
         return true;
     }
 };

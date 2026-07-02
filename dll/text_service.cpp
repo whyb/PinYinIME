@@ -192,6 +192,9 @@ STDMETHODIMP CPinyinTextService::Deactivate() {
     // 保存用户词典
     m_engine.saveUserDict();
 
+    // 关闭后台词库加载线程
+    m_engine.shutdown();
+
     // 关闭 GDI+
     if (m_gdiplusToken) {
         Gdiplus::GdiplusShutdown(m_gdiplusToken);
@@ -251,13 +254,48 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
             *pfEaten = TRUE;
             return S_OK;
         }
-        // - / PageUp (上一页)
-        if ((vk == VK_OEM_MINUS || vk == VK_PRIOR) && !m_engine.m_candidates.empty()) {
+        // PageUp / PageDown: 始终有效翻页
+        if ((vk == VK_PRIOR || vk == VK_NEXT) && !m_engine.m_candidates.empty()) {
             *pfEaten = TRUE;
             return S_OK;
         }
-        // = / PageDown (下一页)
-        if ((vk == VK_OEM_PLUS || vk == VK_NEXT) && !m_engine.m_candidates.empty()) {
+        // - (上一页) — 受 enableMinusEqualsPage 控制
+        if (m_settings.enableMinusEqualsPage && vk == VK_OEM_MINUS && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // = (下一页) — 受 enableMinusEqualsPage 控制
+        if (m_settings.enableMinusEqualsPage && vk == VK_OEM_PLUS && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // , (上一页) — 受 enableCommaPeriodPage 控制
+        if (m_settings.enableCommaPeriodPage && vk == VK_OEM_COMMA && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // . (下一页) — 受 enableCommaPeriodPage 控制
+        if (m_settings.enableCommaPeriodPage && vk == VK_OEM_PERIOD && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // Tab (翻页) — 受 enableTabPage 控制
+        if (m_settings.enableTabPage && vk == VK_TAB && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // [ (上一页) — 受 enableBracketPage 控制
+        if (m_settings.enableBracketPage && vk == VK_OEM_4 && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // ] (下一页) — 受 enableBracketPage 控制
+        if (m_settings.enableBracketPage && vk == VK_OEM_6 && !m_engine.m_candidates.empty()) {
+            *pfEaten = TRUE;
+            return S_OK;
+        }
+        // Left/Right arrows: 候选词选择导航 (始终有效)
+        if ((vk == VK_LEFT || vk == VK_RIGHT) && !m_engine.m_candidates.empty()) {
             *pfEaten = TRUE;
             return S_OK;
         }
@@ -268,28 +306,11 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
         }
     }
 
-    // 切换热键 (始终监听)
-    {
-        bool isToggleKey = false;
-        if (m_settings.toggleModifier == 0) {
-            isToggleKey = (vk == m_settings.toggleHotkey);
-        } else {
-            if (m_settings.toggleHotkey == VK_SHIFT)
-                isToggleKey = (vk == VK_LSHIFT || vk == VK_RSHIFT);
-            else
-                isToggleKey = (vk == m_settings.toggleHotkey);
-        }
-        bool modifierOk = false;
-        if (m_settings.toggleModifier == 0)
-            modifierOk = !ctrlDown && !altDown && !winDown;
-        else if (m_settings.toggleModifier == VK_MENU)
-            modifierOk = altDown && !ctrlDown && !winDown;
-        else if (m_settings.toggleModifier == VK_CONTROL)
-            modifierOk = ctrlDown && !altDown && !winDown;
-
-        if (isToggleKey && modifierOk) {
-            *pfEaten = TRUE;
-        }
+    // 左 Shift 单按: 中/英文模式切换
+    // 始终监听不受中文模式限制; Shift+字母 的大写输入不受影响
+    // 因为 Windows 已根据物理 Shift 状态生成了大写 VK, 应用侧看到的是大写字母
+    if (!ctrlDown && !altDown && !winDown && vk == VK_LSHIFT) {
+        *pfEaten = TRUE;
     }
 
     return S_OK;
@@ -313,26 +334,9 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
     bool winDown  = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
                  || (GetAsyncKeyState(VK_RWIN)    & 0x8000) != 0;
 
-    // ── 切换热键 ──
-    bool isToggleKey = false;
-    if (m_settings.toggleModifier == 0) {
-        isToggleKey = (vk == m_settings.toggleHotkey);
-    } else {
-        if (m_settings.toggleHotkey == VK_SHIFT)
-            isToggleKey = (vk == VK_LSHIFT || vk == VK_RSHIFT);
-        else
-            isToggleKey = (vk == m_settings.toggleHotkey);
-    }
-
-    bool modifierOk = false;
-    if (m_settings.toggleModifier == 0)
-        modifierOk = !ctrlDown && !altDown && !winDown;
-    else if (m_settings.toggleModifier == VK_MENU)
-        modifierOk = altDown && !ctrlDown && !winDown;
-    else if (m_settings.toggleModifier == VK_CONTROL)
-        modifierOk = ctrlDown && !altDown && !winDown;
-
-    if (isToggleKey && modifierOk) {
+    // ── 左 Shift 切换中/英文模式 
+    // 单按 Shift: 切换模式; Shift+字母: 大写输入 (不受影响)
+    if (!ctrlDown && !altDown && !winDown && vk == VK_LSHIFT) {
         if (m_chineseMode && !m_engine.m_buffer.empty()) {
             cancelComposition();
         }
@@ -412,8 +416,11 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
                     }
                 }
             }
+            *pfEaten = TRUE;
+        } else {
+            // 缓冲区为空: 放行退格键到应用程序, 让应用自己处理删除
+            *pfEaten = FALSE;
         }
-        *pfEaten = TRUE;
         return S_OK;
     }
 
@@ -425,9 +432,13 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         return S_OK;
     }
 
-    // ── 空格: 确认第一个候选 ──
+    // ── 空格: 确认当前选中的候选 ──
     if (vk == VK_SPACE && !m_engine.m_candidates.empty()) {
-        handleKeyCommit(0);
+        int selIdx = m_candidateWin.m_selectedIndex;
+        // 确保选中索引在有效范围内
+        int pageCount = (int)m_engine.getPageCandidates().size();
+        if (selIdx < 0 || selIdx >= pageCount) selIdx = 0;
+        handleKeyCommit(selIdx);
         *pfEaten = TRUE;
         return S_OK;
     }
@@ -460,20 +471,110 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         return S_OK;
     }
 
-    // ── - / PageUp: 上一页 ──
-    if (vk == VK_OEM_MINUS || vk == VK_PRIOR) {
+    // ── Left/Right: 候选词选择导航 ──
+    if ((vk == VK_LEFT || vk == VK_RIGHT) && !m_engine.m_candidates.empty()) {
+        int pageCount = (int)m_engine.getPageCandidates().size();
+        if (pageCount > 0) {
+            if (vk == VK_LEFT) {
+                m_candidateWin.m_selectedIndex--;
+                if (m_candidateWin.m_selectedIndex < 0)
+                    m_candidateWin.m_selectedIndex = pageCount - 1;
+            } else {
+                m_candidateWin.m_selectedIndex++;
+                if (m_candidateWin.m_selectedIndex >= pageCount)
+                    m_candidateWin.m_selectedIndex = 0;
+            }
+            InvalidateRect(m_candidateWin.m_hwnd, nullptr, TRUE);
+        }
+        *pfEaten = TRUE;
+        return S_OK;
+    }
+
+    // ── PageUp / PageDown: 始终有效翻页 ──
+    if (vk == VK_PRIOR || vk == VK_NEXT) {
         if (!m_engine.m_candidates.empty()) {
-            m_engine.prevPage();
+            if (vk == VK_PRIOR) m_engine.prevPage();
+            else m_engine.nextPage();
+            m_candidateWin.m_selectedIndex = 0;
             showCandidateWindow();
             *pfEaten = TRUE;
         }
         return S_OK;
     }
 
-    // ── = / PageDown: 下一页 ──
-    if (vk == VK_OEM_PLUS || vk == VK_NEXT) {
-        if (!m_engine.m_candidates.empty()) {
+    // ── -: 上一页 (受 enableMinusEqualsPage 控制) ──
+    if (vk == VK_OEM_MINUS) {
+        if (m_settings.enableMinusEqualsPage && !m_engine.m_candidates.empty()) {
+            m_engine.prevPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── =: 下一页 (受 enableMinusEqualsPage 控制) ──
+    if (vk == VK_OEM_PLUS) {
+        if (m_settings.enableMinusEqualsPage && !m_engine.m_candidates.empty()) {
             m_engine.nextPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── ,: 上一页 (受 enableCommaPeriodPage 控制) ──
+    if (vk == VK_OEM_COMMA) {
+        if (m_settings.enableCommaPeriodPage && !m_engine.m_candidates.empty()) {
+            m_engine.prevPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── .: 下一页 (受 enableCommaPeriodPage 控制) ──
+    if (vk == VK_OEM_PERIOD) {
+        if (m_settings.enableCommaPeriodPage && !m_engine.m_candidates.empty()) {
+            m_engine.nextPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── Tab / Shift+Tab: 翻页 (受 enableTabPage 控制) ──
+    if (vk == VK_TAB) {
+        if (m_settings.enableTabPage && !m_engine.m_candidates.empty()) {
+            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (shiftDown) m_engine.prevPage();
+            else m_engine.nextPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── [: 上一页 (受 enableBracketPage 控制) ──
+    if (vk == VK_OEM_4) {
+        if (m_settings.enableBracketPage && !m_engine.m_candidates.empty()) {
+            m_engine.prevPage();
+            m_candidateWin.m_selectedIndex = 0;
+            showCandidateWindow();
+            *pfEaten = TRUE;
+        }
+        return S_OK;
+    }
+
+    // ── ]: 下一页 (受 enableBracketPage 控制) ──
+    if (vk == VK_OEM_6) {
+        if (m_settings.enableBracketPage && !m_engine.m_candidates.empty()) {
+            m_engine.nextPage();
+            m_candidateWin.m_selectedIndex = 0;
             showCandidateWindow();
             *pfEaten = TRUE;
         }
@@ -512,9 +613,12 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         return S_OK;
     }
 
-    // ── 其他键: 自动提交首候选 ──
+    // ── 其他键: 自动提交当前选中的候选 ──
     if (!m_engine.m_buffer.empty() && !m_engine.m_candidates.empty()) {
-        handleKeyCommit(0);
+        int selIdx = m_candidateWin.m_selectedIndex;
+        int pageCount = (int)m_engine.getPageCandidates().size();
+        if (selIdx < 0 || selIdx >= pageCount) selIdx = 0;
+        handleKeyCommit(selIdx);
         return S_OK;
     }
 

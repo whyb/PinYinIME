@@ -10,6 +10,7 @@
 #include <vector>
 #include "../shared/pinyin_settings.h"
 #include "../shared/utf_utils.h"
+#include "../shared/ime_ipc.h"
 #include "pinyin_engine.h"
 
 extern HINSTANCE g_hDllInst;
@@ -21,6 +22,12 @@ public:
     HFONT m_font = nullptr;
     bool m_visible = false;
     RECT m_settingsBtnRect = {};
+    RECT m_prevBtnRect = {};
+    RECT m_nextBtnRect = {};
+    bool m_prevHovered = false;
+    bool m_nextHovered = false;
+    bool m_trackingMouse = false;
+    int m_selectedIndex = 0;  // 当前选中的候选词索引 (相对当前页)
     int m_textY = 6;
     int m_rowH = 24;
     HRGN m_roundRgn = nullptr;
@@ -172,6 +179,7 @@ public:
 
     void show(const std::vector<std::pair<std::string,int>>& candidates, int pageIndex) {
         if (!m_hwnd) return;
+        m_selectedIndex = 0;  // 新候选列表默认选中第一个
         POINT pt = getCaretPosition();
         HDC hdc = GetDC(m_hwnd);
         SelectObject(hdc, m_font);
@@ -182,9 +190,22 @@ public:
             std::wstring wtext = utf8ToWide(std::to_string(i + 1) + "." + candidates[i].first + " ");
             GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz); width += sz.cx;
         }
-        std::wstring wpage = utf8ToWide(" -/=/PgUp/PgDn翻页  ⚙");
-        GetTextExtentPoint32W(hdc, wpage.c_str(), (int)wpage.size(), &sz);
-        width += sz.cx + 20;
+        bool showBtns = m_pSettings ? m_pSettings->showPageButtons : true;
+        bool showGear = m_pSettings ? m_pSettings->showSettingsGear : true;
+        SIZE tmpSz;
+        if (showBtns || showGear) {
+            if (showBtns) {
+                GetTextExtentPoint32W(hdc, L"◀", 1, &tmpSz);
+                int btnW = tmpSz.cx + 12;
+                width += btnW * 2 + 6;  // ◀ + gap + ▶
+            }
+            if (showGear) {
+                GetTextExtentPoint32W(hdc, L"⚙", 1, &tmpSz);
+                width += tmpSz.cx + 12;  // gear width + padding
+            }
+            if (showBtns && showGear) width += 8;  // gap between buttons and gear
+            width += 12;  // end padding
+        }
         ReleaseDC(m_hwnd, hdc);
 
         RECT screen; SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
@@ -275,46 +296,198 @@ public:
                 bool vert = self->m_pSettings ? self->m_pSettings->verticalLayout : false;
                 for(int i=0;i<(int)candidates.size();i++){
                     int cy = vert ? (candBaseY+i*self->m_rowH) : y;
-                    SetTextColor(hdc,self->getIndexColor());
+                    bool selected = (i == self->m_selectedIndex);
                     std::wstring widx=std::to_wstring(i+1)+L".";
-                    TextOutW(hdc,x,cy,widx.c_str(),(int)widx.size());
-                    GetTextExtentPoint32W(hdc,widx.c_str(),(int)widx.size(),&sz); int cw=sz.cx;
-                    SetTextColor(hdc,self->getTextColor());
                     std::wstring wtext=utf8ToWide(candidates[i].first);
-                    TextOutW(hdc,x+cw,cy,wtext.c_str(),(int)wtext.size());
-                    GetTextExtentPoint32W(hdc,wtext.c_str(),(int)wtext.size(),&sz);
-                    if(!vert) x+=cw+sz.cx+8;
+                    SIZE szIdx,szTxt;
+                    GetTextExtentPoint32W(hdc,widx.c_str(),(int)widx.size(),&szIdx);
+                    GetTextExtentPoint32W(hdc,wtext.c_str(),(int)wtext.size(),&szTxt);
+                    int totalW=szIdx.cx+szTxt.cx;
+                    // 选中项: 反色圆角矩形背景
+                    if(selected){
+                        int selPadX=4, selPadY=1;
+                        RECT selRc={x-selPadX, cy-selPadY, x+totalW+selPadX, cy+self->m_rowH+selPadY-2};
+                        int selR=(std::max)(2,(std::min)(4,self->m_roundR/3));
+                        Gdiplus::Graphics g(hdc);
+                        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                        COLORREF tc=self->getTextColor();
+                        Gdiplus::SolidBrush selBr(Gdiplus::Color(GetRValue(tc),GetGValue(tc),GetBValue(tc)));
+                        Gdiplus::GraphicsPath sp;
+                        sp.StartFigure();
+                        sp.AddArc(selRc.left,selRc.top,selR*2,selR*2,180,90);
+                        sp.AddArc(selRc.right-selR*2,selRc.top,selR*2,selR*2,270,90);
+                        sp.AddArc(selRc.right-selR*2,selRc.bottom-selR*2,selR*2,selR*2,0,90);
+                        sp.AddArc(selRc.left,selRc.bottom-selR*2,selR*2,selR*2,90,90);
+                        sp.CloseFigure();
+                        g.FillPath(&selBr,&sp);
+                        SetTextColor(hdc,self->getBgColor());
+                        TextOutW(hdc,x,cy,widx.c_str(),(int)widx.size());
+                        TextOutW(hdc,x+szIdx.cx,cy,wtext.c_str(),(int)wtext.size());
+                    }else{
+                        SetTextColor(hdc,self->getIndexColor());
+                        TextOutW(hdc,x,cy,widx.c_str(),(int)widx.size());
+                        SetTextColor(hdc,self->getTextColor());
+                        TextOutW(hdc,x+szIdx.cx,cy,wtext.c_str(),(int)wtext.size());
+                    }
+                    if(!vert) x+=totalW+8;
                 }
-                SetTextColor(hdc,RGB(150,150,150));
-                std::wstring wpage=L" -/=/PgUp/PgDn翻页";
+                // ── 翻页按钮 + 齿轮 (根据设置条件显示) ──
+                bool showBtns = self->m_pSettings ? self->m_pSettings->showPageButtons : true;
+                bool showGear = self->m_pSettings ? self->m_pSettings->showSettingsGear : true;
+
+                if (showBtns || showGear) {
                 int pageY=y,pageX=x;
                 if(vert){pageY=candBaseY+(int)candidates.size()*self->m_rowH+2;pageX=8;}
-                TextOutW(hdc,pageX,pageY,wpage.c_str(),(int)wpage.size());
-                GetTextExtentPoint32W(hdc,wpage.c_str(),(int)wpage.size(),&sz);
+
+                SIZE btnSz; GetTextExtentPoint32W(hdc,L"◀",1,&btnSz);
+                int btnPadX=6,btnPadY=2;
+                int btnW=btnSz.cx+btnPadX*2, btnH=btnSz.cy+btnPadY*2;
+                int btnRad=(std::max)(3,(std::min)(5,(int)(self->m_roundR/2)));
+
+                // 计算总页数 & 启用状态
+                int totalPages=1;
+                if(g_pSharedEngine&&!g_pSharedEngine->m_candidates.empty()){
+                    int ps=g_pSharedEngine->getPageSize();
+                    totalPages=((int)g_pSharedEngine->m_candidates.size()+ps-1)/ps;
+                }
+                bool hasPrev=(g_pSharedEngine&&g_pSharedEngine->m_pageIndex>0);
+                bool hasNext=(g_pSharedEngine&&g_pSharedEngine->m_pageIndex<totalPages-1);
+
+                if (showBtns) {
+                // 绘制单个翻页按钮 (圆角矩形 + 箭头文字), hovered 参数控制 hover 高亮
+                auto drawBtn=[&](int bx,int by,const wchar_t* label,bool enabled,bool hovered)->RECT{
+                    RECT br={bx,by,bx+btnW,by+btnH};
+                    {   Gdiplus::Graphics g(hdc);
+                        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                        COLORREF bg=self->getBgColor();
+                        int r=GetRValue(bg),gr=GetGValue(bg),b=GetBValue(bg);
+                        int bgBright=(r*299+gr*587+b*114)/1000;
+                        int d1=bgBright>128?-24:24;
+                        int d2=hovered?(bgBright>128?-20:20):0;
+                        int delta=d1+d2;
+                        auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
+                        Gdiplus::SolidBrush fb(Gdiplus::Color(clmp(r+delta),clmp(gr+delta),clmp(b+delta)));
+                        Gdiplus::GraphicsPath p;
+                        p.StartFigure();
+                        p.AddArc(br.left,br.top,btnRad*2,btnRad*2,180,90);
+                        p.AddArc(br.right-btnRad*2,br.top,btnRad*2,btnRad*2,270,90);
+                        p.AddArc(br.right-btnRad*2,br.bottom-btnRad*2,btnRad*2,btnRad*2,0,90);
+                        p.AddArc(br.left,br.bottom-btnRad*2,btnRad*2,btnRad*2,90,90);
+                        p.CloseFigure();
+                        g.FillPath(&fb,&p);
+                        COLORREF bc=self->getBorderColor();
+                        int bcr=GetRValue(bc),bcg=GetGValue(bc),bcb=GetBValue(bc);
+                        if(!enabled){bcr=(bcr+192)/2;bcg=(bcg+192)/2;bcb=(bcb+192)/2;}
+                        Gdiplus::Pen pen(Gdiplus::Color(bcr,bcg,bcb),1.0f);
+                        g.DrawPath(&pen,&p);
+                    }
+                    SetTextColor(hdc,enabled?self->getTextColor():RGB(180,180,180));
+                    SetBkMode(hdc,TRANSPARENT);
+                    DrawTextW(hdc,label,-1,&br,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+                    return br;
+                };
+
+                self->m_prevBtnRect=drawBtn(pageX,pageY,L"◀",hasPrev,self->m_prevHovered); pageX+=btnW+6;
+                self->m_nextBtnRect=drawBtn(pageX,pageY,L"▶",hasNext,self->m_nextHovered); pageX+=btnW+8;
+                } else {
+                    self->m_prevBtnRect={};
+                    self->m_nextBtnRect={};
+                }
+                if (showGear) {
                 SetTextColor(hdc,RGB(80,80,200)); std::wstring wgear=L"⚙";
-                int gearX=pageX+sz.cx+4; TextOutW(hdc,gearX,pageY,wgear.c_str(),(int)wgear.size());
-                SIZE gearSz; GetTextExtentPoint32W(hdc,wgear.c_str(),(int)wgear.size(),&gearSz);
-                self->m_settingsBtnRect={gearX,pageY,gearX+gearSz.cx+4,pageY+gearSz.cy};
+                SIZE gearSz; GetTextExtentPoint32W(hdc,wgear.c_str(),1,&gearSz);
+                int gearCY=pageY+(btnH-gearSz.cy)/2;
+                TextOutW(hdc,pageX,gearCY,wgear.c_str(),1);
+                self->m_settingsBtnRect={pageX,gearCY,pageX+gearSz.cx+4,gearCY+gearSz.cy};
+                } else {
+                    self->m_settingsBtnRect={};
+                }
+                } // end if (showBtns || showGear)
                 EndPaint(hwnd,&ps);
             }
             return 0;
         }
         if(msg==WM_LBUTTONDOWN){
             CandidateWindow* self=(CandidateWindow*)GetWindowLongPtrW(hwnd,GWLP_USERDATA);
-            if(self){POINT pt={LOWORD(lp),HIWORD(lp)}; if(PtInRect(&self->m_settingsBtnRect,pt)){
-                // 齿轮按钮: 启动 PinyinIME.exe 设置窗口
+            if(self){POINT pt={LOWORD(lp),HIWORD(lp)};
+                bool showBtns = self->m_pSettings ? self->m_pSettings->showPageButtons : true;
+                bool showGear = self->m_pSettings ? self->m_pSettings->showSettingsGear : true;
+                // ◀ 上一页按钮
+                if(showBtns && PtInRect(&self->m_prevBtnRect,pt)){
+                    if(g_pSharedEngine&&g_pSharedEngine->m_pageIndex>0){
+                        g_pSharedEngine->prevPage();
+                        self->show(g_pSharedEngine->getPageCandidates(),g_pSharedEngine->m_pageIndex);
+                    }
+                }
+                // ▶ 下一页按钮
+                else if(showBtns && PtInRect(&self->m_nextBtnRect,pt)){
+                    if(g_pSharedEngine){
+                        int ps=g_pSharedEngine->getPageSize();
+                        int total=((int)g_pSharedEngine->m_candidates.size()+ps-1)/ps;
+                        if(total<1)total=1;
+                        if(g_pSharedEngine->m_pageIndex<total-1){
+                            g_pSharedEngine->nextPage();
+                            self->show(g_pSharedEngine->getPageCandidates(),g_pSharedEngine->m_pageIndex);
+                        }
+                    }
+                }
+                // ⚙ 齿轮按钮: 打开 PinyinIME.exe 设置窗口 (IPC)
+                else if(showGear && PtInRect(&self->m_settingsBtnRect,pt)){
                 // DLL 加载到其他进程后工作目录可能不对, 必须用完整路径
                 wchar_t exePath[MAX_PATH];
                 GetModuleFileNameW(g_hDllInst, exePath, MAX_PATH);
                 std::wstring dir(exePath);
                 size_t pos = dir.find_last_of(L"\\/");
-                if (pos != std::wstring::npos) {
-                    dir = dir.substr(0, pos + 1);
+                if (pos == std::wstring::npos) return 0;
+                dir = dir.substr(0, pos + 1);
+
+                // 检查 EXE 是否已在运行
+                HANDLE hMutex = OpenMutexW(SYNCHRONIZE, FALSE, PinyinIME_SINGLE_INSTANCE_MUTEX);
+                if (hMutex) {
+                    CloseHandle(hMutex);
+                    // EXE 已在运行: 通过跨进程消息唤起设置窗口
+                    static UINT s_msgOS = RegisterWindowMessageW(PinyinIME_MSG_OPEN_SETTINGS);
+                    HWND hExe = FindWindowW(PinyinIME_MAIN_WINDOW_CLASS, L"PinyinIME");
+                    if (hExe && s_msgOS) {
+                        PostMessageW(hExe, s_msgOS, 0, 0);
+                    }
+                } else {
+                    // EXE 未运行: 启动 (默认行为即打开设置窗口)
                     std::wstring settingsExe = dir + L"PinyinIME.exe";
                     ShellExecuteW(nullptr, L"open", settingsExe.c_str(),
                         nullptr, dir.c_str(), SW_SHOWNORMAL);
                 }
             }}
+            return 0;
+        }
+        if(msg==WM_MOUSEMOVE){
+            CandidateWindow* self=(CandidateWindow*)GetWindowLongPtrW(hwnd,GWLP_USERDATA);
+            if(self){
+                POINT pt={LOWORD(lp),HIWORD(lp)};
+                bool prevHov=PtInRect(&self->m_prevBtnRect,pt);
+                bool nextHov=PtInRect(&self->m_nextBtnRect,pt);
+                if(prevHov!=self->m_prevHovered||nextHov!=self->m_nextHovered){
+                    self->m_prevHovered=prevHov;
+                    self->m_nextHovered=nextHov;
+                    InvalidateRect(hwnd,nullptr,TRUE);
+                }
+                // 注册 WM_MOUSELEAVE 通知
+                if((prevHov||nextHov)&&!self->m_trackingMouse){
+                    TRACKMOUSEEVENT tme={sizeof(tme),TME_LEAVE,hwnd,0};
+                    TrackMouseEvent(&tme);
+                    self->m_trackingMouse=true;
+                }
+            }
+            return 0;
+        }
+        if(msg==WM_MOUSELEAVE){
+            CandidateWindow* self=(CandidateWindow*)GetWindowLongPtrW(hwnd,GWLP_USERDATA);
+            if(self){
+                self->m_prevHovered=false;
+                self->m_nextHovered=false;
+                self->m_trackingMouse=false;
+                InvalidateRect(hwnd,nullptr,TRUE);
+            }
             return 0;
         }
         return DefWindowProcW(hwnd,msg,wp,lp);

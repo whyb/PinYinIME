@@ -21,6 +21,7 @@ set(SHARED_HEADERS
     shared/pinyin_settings.h
     shared/tsf_guids.h
     shared/utf_utils.h
+    shared/ime_ipc.h
 )
 
 # ==================== DLL: PinyinIMETSF.dll ====================
@@ -28,6 +29,7 @@ set(DLL_SOURCES
     dll/dll_main.cpp
     dll/text_service.cpp
     dll/trie_dict.cpp
+    dll/shm_dict.cpp
 )
 
 set(DLL_HEADERS
@@ -38,6 +40,7 @@ set(DLL_HEADERS
     dll/candidate_window.h
     dll/dictionary.h
     dll/trie_dict.h
+    dll/shm_dict.h
     dll/s2t_data.h
 )
 
