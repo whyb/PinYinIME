@@ -60,6 +60,23 @@ struct SettingsWindow {
             self = (SettingsWindow*)((CREATESTRUCTW*)lp)->lpCreateParams;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)self);
         }
+        // 当窗口大小改变或创建时，实时裁剪窗口区域为圆角，从根本上杜绝白边
+        if ((msg == WM_SIZE || msg == WM_CREATE) && self) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            auto S = [self](int v) -> int { return (int)(v * self->m_dpiScale + 0.5f); };
+            int fs = self->m_temp.fontSize; if (fs < 12) fs = 12; if (fs > 36) fs = 36;
+            HFONT hFont = CreateFontW(-(int)(fs * self->m_dpiScale + 0.5f), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, self->m_temp.fontName.c_str());
+            HDC hdc = GetDC(hwnd);
+            HGDIOBJ old = SelectObject(hdc, hFont);
+            TEXTMETRICW tm; GetTextMetrics(hdc, &tm);
+            SelectObject(hdc, old); DeleteObject(hFont);
+            ReleaseDC(hwnd, hdc);
+            int cr = (std::max)(6, (std::min)(12, (int)(tm.tmHeight * 2 / 3)));
+            HRGN hRgn = CreateRoundRectRgn(0, 0, rc.right + 1, rc.bottom + 1, cr * 2, cr * 2);
+            SetWindowRgn(hwnd, hRgn, TRUE);
+        }
+
         if (msg == WM_PAINT && self) {
             PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc; GetClientRect(hwnd, &rc);
@@ -70,31 +87,32 @@ struct SettingsWindow {
                 CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_SWISS,self->m_temp.fontName.c_str());
             SelectObject(hdc,hFont); SetBkMode(hdc,TRANSPARENT);
             TEXTMETRICW tm; GetTextMetrics(hdc,&tm);
-            {   // GDI+ 背景 + 渐变边框
+            {   // GDI+ 背景 + 渐变边框 (FillPath 同心层叠, 窗口已被 SetWindowRgn 裁剪干净)
                 Gdiplus::Graphics graphics(hdc);
-                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                 int w=rc.right,h=rc.bottom,cr=(std::max)(6,(std::min)(12,(int)(tm.tmHeight*2/3)));
                 auto makeRR=[](Gdiplus::GraphicsPath& p,int x,int y,int rw,int rh,int rad){
                     p.Reset();p.StartFigure();
-                    p.AddArc(x,y,rad*2,rad*2,180,90);p.AddArc(x+rw-rad*2,y,rad*2,rad*2,270,90);
-                    p.AddArc(x+rw-rad*2,y+rh-rad*2,rad*2,rad*2,0,90);p.AddArc(x,y+rh-rad*2,rad*2,rad*2,90,90);
+                    int dia = rad * 2;
+                    p.AddArc(x, y, dia, dia, 180, 90);
+                    p.AddArc(x + rw - dia, y, dia, dia, 270, 90);
+                    p.AddArc(x + rw - dia, y + rh - dia, dia, dia, 0, 90);
+                    p.AddArc(x, y + rh - dia, dia, dia, 90, 90);
                     p.CloseFigure();
                 };
-                Gdiplus::GraphicsPath bgPath;
-                {COLORREF c=self->m_temp.bgColor;Gdiplus::SolidBrush bgBrush(Gdiplus::Color(GetRValue(c),GetGValue(c),GetBValue(c)));
-                 makeRR(bgPath,0,0,w,h,cr);graphics.FillPath(&bgBrush,&bgPath);}
-                COLORREF bc=self->m_temp.borderColor,bg=self->m_temp.bgColor;
+                COLORREF bc=self->m_temp.borderColor,bgc=self->m_temp.bgColor;
                 int rr=GetRValue(bc),rg=GetGValue(bc),rb=GetBValue(bc);
-                int bgBright=(GetRValue(bg)*299+GetGValue(bg)*587+GetBValue(bg)*114)/1000;
+                int bgBright=(GetRValue(bgc)*299+GetGValue(bgc)*587+GetBValue(bgc)*114)/1000;
                 int dir=(bgBright<128)?1:-1;
                 auto clampC=[](int v)->int{return v<0?0:(v>255?255:v);};
-                Gdiplus::GraphicsPath borderPath;
-                for(int layer=0;layer<3;layer++){
-                    int off=layer,delta=(layer==0)?40:(layer==1)?18:0;
-                    int lw=w-off*2,lh=h-off*2,lcr=cr-off;if(lcr<2)lcr=2;
-                    Gdiplus::Color penColor(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir));
-                    Gdiplus::Pen pen(penColor,1.0f);
-                    makeRR(borderPath,off,off,lw,lh,lcr);graphics.DrawPath(&pen,&borderPath);
+                for(int layer=0;layer<4;layer++){
+                    int off=layer,lw=w-off*2,lh=h-off*2,lcr=cr-off;if(lcr<2)lcr=2;
+                    int delta=(layer==0)?40:(layer==1)?18:0;
+                    COLORREF col=(layer<3)?RGB(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir)):bgc;
+                    Gdiplus::SolidBrush br(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
+                    Gdiplus::GraphicsPath pth;
+                    makeRR(pth,off,off,lw,lh,lcr);
+                    graphics.FillPath(&br,&pth);
                 }
             }
             int borderW=3,pad=(std::max)(4,(int)(tm.tmHeight/8)),textY=borderW+pad,x=S(8);
@@ -110,15 +128,16 @@ struct SettingsWindow {
                 RECT selRc={x-selPad, textY-1, x+totalW+selPad, textY+tm.tmHeight-1};
                 {
                     Gdiplus::Graphics g(hdc);
-                    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                     COLORREF tc=self->m_temp.textColor;
-                    Gdiplus::SolidBrush selBr(Gdiplus::Color(GetRValue(tc),GetGValue(tc),GetBValue(tc)));
+                    Gdiplus::SolidBrush selBr(Gdiplus::Color(255, GetRValue(tc), GetGValue(tc), GetBValue(tc)));
                     Gdiplus::GraphicsPath sp;
                     sp.StartFigure();
-                    sp.AddArc(selRc.left,selRc.top,selR*2,selR*2,180,90);
-                    sp.AddArc(selRc.right-selR*2,selRc.top,selR*2,selR*2,270,90);
-                    sp.AddArc(selRc.right-selR*2,selRc.bottom-selR*2,selR*2,selR*2,0,90);
-                    sp.AddArc(selRc.left,selRc.bottom-selR*2,selR*2,selR*2,90,90);
+                    int dia = selR * 2;
+                    sp.AddArc(selRc.left, selRc.top, dia, dia, 180, 90);
+                    sp.AddArc(selRc.right - dia, selRc.top, dia, dia, 270, 90);
+                    sp.AddArc(selRc.right - dia, selRc.bottom - dia, dia, dia, 0, 90);
+                    sp.AddArc(selRc.left, selRc.bottom - dia, dia, dia, 90, 90);
                     sp.CloseFigure();
                     g.FillPath(&selBr,&sp);
                 }
@@ -143,23 +162,31 @@ struct SettingsWindow {
             auto drawPBtn=[&](int bx,const wchar_t* label){
                 RECT br={bx,textY,bx+btnW,textY+btnH};
                 {   Gdiplus::Graphics g(hdc);
-                    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                     COLORREF bg=self->m_temp.bgColor;
                     int r=GetRValue(bg),gr=GetGValue(bg),b=GetBValue(bg);
                     int bgBright=(r*299+gr*587+b*114)/1000;
                     int delta=bgBright>128?-24:24;
                     auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
-                    Gdiplus::SolidBrush fb(Gdiplus::Color(clmp(r+delta),clmp(gr+delta),clmp(b+delta)));
-                    Gdiplus::GraphicsPath p;
-                    p.StartFigure();
-                    p.AddArc(br.left,br.top,btnR*2,btnR*2,180,90);
-                    p.AddArc(br.right-btnR*2,br.top,btnR*2,btnR*2,270,90);
-                    p.AddArc(br.right-btnR*2,br.bottom-btnR*2,btnR*2,btnR*2,0,90);
-                    p.AddArc(br.left,br.bottom-btnR*2,btnR*2,btnR*2,90,90);
-                    p.CloseFigure();
-                    g.FillPath(&fb,&p);
-                    Gdiplus::Pen pen(Gdiplus::Color(GetRValue(self->m_temp.borderColor),GetGValue(self->m_temp.borderColor),GetBValue(self->m_temp.borderColor)),1.0f);
-                    g.DrawPath(&pen,&p);
+                    COLORREF btnBg=RGB(clmp(r+delta),clmp(gr+delta),clmp(b+delta));
+                    COLORREF bc=self->m_temp.borderColor;
+                    // FillPath 两层同心: 边框层 + 按钮底色
+                    for(int lay=0;lay<2;lay++){
+                        int off=lay, lx=br.left+off, ly=br.top+off;
+                        int lw=(br.right-br.left)-off*2, lh=(br.bottom-br.top)-off*2;
+                        int rad=btnR-off; if(rad<1)rad=1;
+                        COLORREF col=(lay==0)?bc:btnBg;
+                        Gdiplus::SolidBrush br2(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
+                        Gdiplus::GraphicsPath pt;
+                        pt.StartFigure();
+                        int dia = rad * 2;
+                        pt.AddArc(lx, ly, dia, dia, 180, 90);
+                        pt.AddArc(lx + lw - dia, ly, dia, dia, 270, 90);
+                        pt.AddArc(lx + lw - dia, ly + lh - dia, dia, dia, 0, 90);
+                        pt.AddArc(lx, ly + lh - dia, dia, dia, 90, 90);
+                        pt.CloseFigure();
+                        g.FillPath(&br2,&pt);
+                    }
                 }
                 SetTextColor(hdc,self->m_temp.textColor);
                 RECT cr=br; DrawTextW(hdc,label,-1,&cr,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
@@ -384,31 +411,32 @@ struct SettingsWindow {
             if(!self)break;
             PAINTSTRUCT ps;HDC hdc=BeginPaint(hwnd,&ps);
             RECT rc;GetClientRect(hwnd,&rc);
-            {
+            {   // GDI+ 背景 + 渐变边框 (FillPath 同心层叠, 窗口已被 SetWindowRgn 裁剪干净)
                 Gdiplus::Graphics graphics(hdc);
-                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                 int w=rc.right,h=rc.bottom,cr=self->m_roundR;
                 auto makeRR=[](Gdiplus::GraphicsPath& p,int x,int y,int rw,int rh,int rad){
                     p.Reset();p.StartFigure();
-                    p.AddArc(x,y,rad*2,rad*2,180,90);p.AddArc(x+rw-rad*2,y,rad*2,rad*2,270,90);
-                    p.AddArc(x+rw-rad*2,y+rh-rad*2,rad*2,rad*2,0,90);p.AddArc(x,y+rh-rad*2,rad*2,rad*2,90,90);
+                    int dia = rad * 2;
+                    p.AddArc(x, y, dia, dia, 180, 90);
+                    p.AddArc(x + rw - dia, y, dia, dia, 270, 90);
+                    p.AddArc(x + rw - dia, y + rh - dia, dia, dia, 0, 90);
+                    p.AddArc(x, y + rh - dia, dia, dia, 90, 90);
                     p.CloseFigure();
                 };
-                Gdiplus::GraphicsPath bgPath;
-                {COLORREF c=self->m_temp.bgColor;Gdiplus::SolidBrush bgBrush(Gdiplus::Color(GetRValue(c),GetGValue(c),GetBValue(c)));
-                 makeRR(bgPath,0,0,w,h,cr);graphics.FillPath(&bgBrush,&bgPath);}
-                COLORREF bc=self->m_temp.borderColor,bg=self->m_temp.bgColor;
+                COLORREF bc=self->m_temp.borderColor,bgc=self->m_temp.bgColor;
                 int rr=GetRValue(bc),rg=GetGValue(bc),rb=GetBValue(bc);
-                int bgBright=(GetRValue(bg)*299+GetGValue(bg)*587+GetBValue(bg)*114)/1000;
+                int bgBright=(GetRValue(bgc)*299+GetGValue(bgc)*587+GetBValue(bgc)*114)/1000;
                 int dir=(bgBright<128)?1:-1;
                 auto clampC=[](int v)->int{return v<0?0:(v>255?255:v);};
-                Gdiplus::GraphicsPath borderPath;
-                for(int layer=0;layer<3;layer++){
-                    int off=layer,delta=(layer==0)?40:(layer==1)?18:0;
-                    int lw=w-off*2,lh=h-off*2,lcr=cr-off;if(lcr<2)lcr=2;
-                    Gdiplus::Color penColor(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir));
-                    Gdiplus::Pen pen(penColor,1.0f);
-                    makeRR(borderPath,off,off,lw,lh,lcr);graphics.DrawPath(&pen,&borderPath);
+                for(int layer=0;layer<4;layer++){
+                    int off=layer,lw=w-off*2,lh=h-off*2,lcr=cr-off;if(lcr<2)lcr=2;
+                    int delta=(layer==0)?40:(layer==1)?18:0;
+                    COLORREF col=(layer<3)?RGB(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir)):bgc;
+                    Gdiplus::SolidBrush br(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
+                    Gdiplus::GraphicsPath pth;
+                    makeRR(pth,off,off,lw,lh,lcr);
+                    graphics.FillPath(&br,&pth);
                 }
             }
             // ── 自绘标题栏 ──
@@ -426,7 +454,7 @@ struct SettingsWindow {
                 self->m_closeBtnRect={btnX,btnY,btnX+btnSize,btnY+btnSize};
                 {
                     Gdiplus::Graphics g(hdc);
-                    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                     RECT br=self->m_closeBtnRect;
                     int r2=3;
                     COLORREF bg=self->m_temp.bgColor;
@@ -434,13 +462,14 @@ struct SettingsWindow {
                     int br2=(rr*299+gg*587+bb*114)/1000;
                     int delta=br2>128?-18:18;
                     auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
-                    Gdiplus::SolidBrush fb(Gdiplus::Color(clmp(rr+delta),clmp(gg+delta),clmp(bb+delta)));
+                    Gdiplus::SolidBrush fb(Gdiplus::Color(255, clmp(rr+delta), clmp(gg+delta), clmp(bb+delta)));
                     Gdiplus::GraphicsPath cp;
                     cp.StartFigure();
-                    cp.AddArc(br.left,br.top,r2*2,r2*2,180,90);
-                    cp.AddArc(br.right-r2*2,br.top,r2*2,r2*2,270,90);
-                    cp.AddArc(br.right-r2*2,br.bottom-r2*2,r2*2,r2*2,0,90);
-                    cp.AddArc(br.left,br.bottom-r2*2,r2*2,r2*2,90,90);
+                    int dia = r2 * 2;
+                    cp.AddArc(br.left, br.top, dia, dia, 180, 90);
+                    cp.AddArc(br.right - dia, br.top, dia, dia, 270, 90);
+                    cp.AddArc(br.right - dia, br.bottom - dia, dia, dia, 0, 90);
+                    cp.AddArc(br.left, br.bottom - dia, dia, dia, 90, 90);
                     cp.CloseFigure();
                     g.FillPath(&fb,&cp);
                 }

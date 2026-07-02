@@ -37,6 +37,10 @@ public:
     // 缓存后供 getCaretPosition 优先使用 (解决 Firefox 等不使用 Win32 caret 的应用)
     POINT m_tsfCaretPos = {0, 0};
     bool m_hasTsfCaretPos = false;
+    // 预组合光标: 在 startComposition 插入文本前捕获的原始光标位置,
+    // 此时应用程序的原生选区仍然有效, GetTextExt 返回的坐标通常更可靠
+    POINT m_preCompCaretPos = {0, 0};
+    bool m_hasPreCompCaretPos = false;
 
     COLORREF getBgColor()     { return m_pSettings ? m_pSettings->bgColor     : RGB(0xF0,0xF5,0xF0); }
     COLORREF getBorderColor() { return m_pSettings ? m_pSettings->borderColor : RGB(0x96,0xC6,0x96); }
@@ -76,37 +80,86 @@ public:
         POINT pt = {0, 0};
         bool found = false;
 
-        // 方法 0: TSF GetTextExt 缓存 (最符合 TSF 规范, 解决 Firefox/Chrome 等非 Win32 caret 应用)
-        if (m_hasTsfCaretPos && (m_tsfCaretPos.x != 0 || m_tsfCaretPos.y != 0)) {
-            pt = m_tsfCaretPos;
-            found = true;
-        }
-
-        // 方法 1: Win32 标准光标 (同一线程, 最可靠)
-        if (!found) {
+        // ── 先查询 Win32 GUI 线程信息 (用于交叉验证 TSF 坐标) ──
+        POINT guiCaretPt = {0, 0};
+        bool hasGuiCaret = false;
+        POINT guiFocusPt = {0, 0};
+        bool hasGuiFocus = false;
+        {
             GUITHREADINFO gti = {};
             gti.cbSize = sizeof(gti);
             if (GetGUIThreadInfo(GetCurrentThreadId(), &gti)) {
+                // Win32 光标 (System Caret) — 系统管理, 在所有原生 Win32 应用中可靠
                 if (gti.hwndCaret && (gti.rcCaret.right > 0 || gti.rcCaret.bottom > 0)) {
                     POINT caretPt = {gti.rcCaret.left, gti.rcCaret.bottom};
                     if (ClientToScreen(gti.hwndCaret, &caretPt)) {
-                        pt = caretPt;
-                        found = true;
+                        guiCaretPt = caretPt;
+                        hasGuiCaret = true;
                     }
                 }
-                if (!found && gti.hwndFocus) {
-                    // 备选: 获取焦点控件的屏幕位置
+                // 焦点窗口矩形 — 较粗粒度的后备
+                if (gti.hwndFocus) {
                     RECT rc;
                     if (GetWindowRect(gti.hwndFocus, &rc)) {
-                        pt.x = rc.left + 4;
-                        pt.y = rc.bottom + 4;
-                        found = true;
+                        guiFocusPt.x = rc.left + 4;
+                        guiFocusPt.y = rc.bottom + 4;
+                        hasGuiFocus = true;
                     }
                 }
             }
         }
 
-        // 方法 2: UI Automation (现代应用: Chrome/Edge/VSCode/UWP 等)
+        // 辅助: 判断两个屏幕坐标是否 "接近" (60px 阈值内认为一致)
+        auto isCloseEnough = [](POINT a, POINT b) -> bool {
+            return abs(a.x - b.x) < 60 && abs(a.y - b.y) < 60;
+        };
+
+        // 辅助: 判断 TSF 坐标是否看起来合理 (在屏幕范围内, 非零)
+        auto isValidTsfPos = [](POINT p) -> bool {
+            if (p.x == 0 && p.y == 0) return false;
+            // 排除明显出界的坐标 (屏幕坐标不应为负值过大, 这里简单检查)
+            if (p.x < -10000 || p.y < -10000) return false;
+            if (p.x > 50000 || p.y > 50000) return false;
+            return true;
+        };
+
+        // ── 方法 0: 预组合 TSF 光标 (在组合文本插入前捕获, 最接近应用原生光标) ──
+        if (m_hasPreCompCaretPos && isValidTsfPos(m_preCompCaretPos)) {
+            // 交叉验证: 如果 Win32 光标存在且与 TSF 坐标不一致, 优先信任 Win32 光标
+            // (Firefox 等应用对 TSF GetTextExt 实现不完整, 但可能暴露了正确的 Win32 caret)
+            if (hasGuiCaret && !isCloseEnough(m_preCompCaretPos, guiCaretPt)) {
+                pt = guiCaretPt;
+            } else {
+                pt = m_preCompCaretPos;
+            }
+            found = true;
+        }
+
+        // ── 方法 1: TSF GetTextExt 组合时缓存 (带交叉验证) ──
+        if (!found && m_hasTsfCaretPos && isValidTsfPos(m_tsfCaretPos)) {
+            if (hasGuiCaret && !isCloseEnough(m_tsfCaretPos, guiCaretPt)) {
+                // TSF 坐标与系统光标不一致: 优先信任系统光标
+                // 典型场景: Firefox 地址栏 / Chrome 等应用 GetTextExt 返回偏移坐标
+                pt = guiCaretPt;
+            } else {
+                pt = m_tsfCaretPos;
+            }
+            found = true;
+        }
+
+        // ── 方法 2: Win32 系统光标 (GetGUIThreadInfo) ──
+        if (!found && hasGuiCaret) {
+            pt = guiCaretPt;
+            found = true;
+        }
+
+        // ── 方法 3: 焦点窗口矩形 ──
+        if (!found && hasGuiFocus) {
+            pt = guiFocusPt;
+            found = true;
+        }
+
+        // ── 方法 4: UI Automation (现代应用: Chrome/Edge/VSCode/UWP 等) ──
         if (!found) {
             IUIAutomation* pUIA = nullptr;
             HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER,
@@ -154,7 +207,7 @@ public:
             }
         }
 
-        // 方法 3: 前台窗口
+        // ── 方法 5: 前台窗口 ──
         if (!found) {
             HWND hForeground = GetForegroundWindow();
             if (hForeground) {
@@ -167,7 +220,7 @@ public:
             }
         }
 
-        // 方法 4: 屏幕保底
+        // ── 方法 6: 屏幕保底 ──
         if (!found) {
             RECT screen;
             SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
@@ -260,31 +313,34 @@ public:
                 PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
                 RECT rc; GetClientRect(hwnd, &rc);
 
-                {   // GDI+ 背景 + 渐变边框
+                {   // GDI+ 背景 + 渐变边框 (FillPath 同心层叠, 边框粗细均匀)
                     Gdiplus::Graphics graphics(hdc);
-                    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                     int w = rc.right, h = rc.bottom, cr = self->m_roundR;
                     auto makeRR = [](Gdiplus::GraphicsPath& p, int x, int y, int rw, int rh, int rad) {
                         p.Reset(); p.StartFigure();
-                        p.AddArc(x,y,rad*2,rad*2,180,90); p.AddArc(x+rw-rad*2,y,rad*2,rad*2,270,90);
-                        p.AddArc(x+rw-rad*2,y+rh-rad*2,rad*2,rad*2,0,90); p.AddArc(x,y+rh-rad*2,rad*2,rad*2,90,90);
+                        int dia = rad * 2;
+                        p.AddArc(x, y, dia, dia, 180, 90);
+                        p.AddArc(x + rw - dia, y, dia, dia, 270, 90);
+                        p.AddArc(x + rw - dia, y + rh - dia, dia, dia, 0, 90);
+                        p.AddArc(x, y + rh - dia, dia, dia, 90, 90);
                         p.CloseFigure();
                     };
-                    Gdiplus::GraphicsPath bgPath;
-                    { COLORREF c = self->getBgColor(); Gdiplus::SolidBrush bgBrush(Gdiplus::Color(GetRValue(c),GetGValue(c),GetBValue(c)));
-                      makeRR(bgPath,0,0,w,h,cr); graphics.FillPath(&bgBrush,&bgPath); }
                     COLORREF bc=self->getBorderColor(), bgc=self->getBgColor();
-                    int rr=GetRValue(bc),rg=GetGValue(bc),rb=GetBValue(bc);
-                    int bgBright=(GetRValue(bgc)*299+GetGValue(bgc)*587+GetBValue(bgc)*114)/1000;
-                    int dir=(bgBright<128)?1:-1;
-                    auto clampC=[](int v)->int{return v<0?0:(v>255?255:v);};
-                    Gdiplus::GraphicsPath borderPath;
-                    for(int layer=0;layer<3;layer++){
-                        int off=layer,delta=(layer==0)?40:(layer==1)?18:0;
-                        int lw=w-off*2,lh=h-off*2,lcr=cr-off; if(lcr<2)lcr=2;
-                        Gdiplus::Color penColor(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir));
-                        Gdiplus::Pen pen(penColor,1.0f);
-                        makeRR(borderPath,off,off,lw,lh,lcr); graphics.DrawPath(&pen,&borderPath);
+                    int rr2=GetRValue(bc),rg2=GetGValue(bc),rb2=GetBValue(bc);
+                    int bgb=(GetRValue(bgc)*299+GetGValue(bgc)*587+GetBValue(bgc)*114)/1000;
+                    int dir=(bgb<128)?1:-1;
+                    auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
+                    // 4层同心FillPath: 3层边框(每层1px) + 1层背景
+                    for(int layer=0;layer<4;layer++){
+                        int off=layer, lw=w-off*2, lh=h-off*2, lcr=cr-off;
+                        if(lcr<2)lcr=2;
+                        int delta=(layer==0)?40:(layer==1)?18:0;
+                        COLORREF col=(layer<3)?RGB(clmp(rr2+delta*dir),clmp(rg2+delta*dir),clmp(rb2+delta*dir)):bgc;
+                        Gdiplus::SolidBrush br(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
+                        Gdiplus::GraphicsPath pth;
+                        makeRR(pth,off,off,lw,lh,lcr);
+                        graphics.FillPath(&br,&pth);
                     }
                 }
 
@@ -309,15 +365,16 @@ public:
                         RECT selRc={x-selPadX, cy-selPadY, x+totalW+selPadX, cy+self->m_rowH+selPadY-2};
                         int selR=(std::max)(2,(std::min)(4,self->m_roundR/3));
                         Gdiplus::Graphics g(hdc);
-                        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                         COLORREF tc=self->getTextColor();
-                        Gdiplus::SolidBrush selBr(Gdiplus::Color(GetRValue(tc),GetGValue(tc),GetBValue(tc)));
+                        Gdiplus::SolidBrush selBr(Gdiplus::Color(255, GetRValue(tc), GetGValue(tc), GetBValue(tc)));
                         Gdiplus::GraphicsPath sp;
                         sp.StartFigure();
-                        sp.AddArc(selRc.left,selRc.top,selR*2,selR*2,180,90);
-                        sp.AddArc(selRc.right-selR*2,selRc.top,selR*2,selR*2,270,90);
-                        sp.AddArc(selRc.right-selR*2,selRc.bottom-selR*2,selR*2,selR*2,0,90);
-                        sp.AddArc(selRc.left,selRc.bottom-selR*2,selR*2,selR*2,90,90);
+                        int dia = selR * 2;
+                        sp.AddArc(selRc.left, selRc.top, dia, dia, 180, 90);
+                        sp.AddArc(selRc.right - dia, selRc.top, dia, dia, 270, 90);
+                        sp.AddArc(selRc.right - dia, selRc.bottom - dia, dia, dia, 0, 90);
+                        sp.AddArc(selRc.left, selRc.bottom - dia, dia, dia, 90, 90);
                         sp.CloseFigure();
                         g.FillPath(&selBr,&sp);
                         SetTextColor(hdc,self->getBgColor());
@@ -358,7 +415,7 @@ public:
                 auto drawBtn=[&](int bx,int by,const wchar_t* label,bool enabled,bool hovered)->RECT{
                     RECT br={bx,by,bx+btnW,by+btnH};
                     {   Gdiplus::Graphics g(hdc);
-                        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                         COLORREF bg=self->getBgColor();
                         int r=GetRValue(bg),gr=GetGValue(bg),b=GetBValue(bg);
                         int bgBright=(r*299+gr*587+b*114)/1000;
@@ -366,20 +423,27 @@ public:
                         int d2=hovered?(bgBright>128?-20:20):0;
                         int delta=d1+d2;
                         auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
-                        Gdiplus::SolidBrush fb(Gdiplus::Color(clmp(r+delta),clmp(gr+delta),clmp(b+delta)));
-                        Gdiplus::GraphicsPath p;
-                        p.StartFigure();
-                        p.AddArc(br.left,br.top,btnRad*2,btnRad*2,180,90);
-                        p.AddArc(br.right-btnRad*2,br.top,btnRad*2,btnRad*2,270,90);
-                        p.AddArc(br.right-btnRad*2,br.bottom-btnRad*2,btnRad*2,btnRad*2,0,90);
-                        p.AddArc(br.left,br.bottom-btnRad*2,btnRad*2,btnRad*2,90,90);
-                        p.CloseFigure();
-                        g.FillPath(&fb,&p);
+                        COLORREF btnBg=RGB(clmp(r+delta),clmp(gr+delta),clmp(b+delta));
                         COLORREF bc=self->getBorderColor();
                         int bcr=GetRValue(bc),bcg=GetGValue(bc),bcb=GetBValue(bc);
                         if(!enabled){bcr=(bcr+192)/2;bcg=(bcg+192)/2;bcb=(bcb+192)/2;}
-                        Gdiplus::Pen pen(Gdiplus::Color(bcr,bcg,bcb),1.0f);
-                        g.DrawPath(&pen,&p);
+                        // FillPath 两层同心: 边框层 + 按钮底色
+                        for(int lay=0;lay<2;lay++){
+                            int off=lay, bx=br.left+off, by=br.top+off;
+                            int bw=br.right-br.left-off*2, bh=br.bottom-br.top-off*2;
+                            int rad=btnRad-off; if(rad<1)rad=1;
+                            COLORREF col=(lay==0)?RGB(bcr,bcg,bcb):btnBg;
+                            Gdiplus::SolidBrush br2(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
+                            Gdiplus::GraphicsPath pt;
+                            pt.StartFigure();
+                            int dia = rad * 2;
+                            pt.AddArc(bx, by, dia, dia, 180, 90);
+                            pt.AddArc(bx + bw - dia, by, dia, dia, 270, 90);
+                            pt.AddArc(bx + bw - dia, by + bh - dia, dia, dia, 0, 90);
+                            pt.AddArc(bx, by + bh - dia, dia, dia, 90, 90);
+                            pt.CloseFigure();
+                            g.FillPath(&br2,&pt);
+                        }
                     }
                     SetTextColor(hdc,enabled?self->getTextColor():RGB(180,180,180));
                     SetBkMode(hdc,TRANSPARENT);

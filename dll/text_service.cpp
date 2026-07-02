@@ -4,6 +4,56 @@
 #include "class_factory.h"
 #include "../shared/utf_utils.h"
 
+// ==================== 中文标点映射表 ====================
+// VK + Shift → 全角标点 (U+FF00 系列 + 中文特有符号)
+static const wchar_t* getFullWidthPunct(DWORD vk, bool shift) {
+    struct Map { DWORD vk; bool shift; const wchar_t* full; };
+    static const Map table[] = {
+        {VK_OEM_1,     false, L"\xFF1B"}, // ; → ；
+        {VK_OEM_1,     true,  L"\xFF1A"}, // : → ：
+        {VK_OEM_2,     false, L"\x3001"}, // / → 、
+        {VK_OEM_2,     true,  L"\xFF1F"}, // ? → ？
+        {VK_OEM_3,     false, L"\xFF40"}, // ` → ｀
+        {VK_OEM_3,     true,  L"\xFF5E"}, // ~ → ～
+        {VK_OEM_4,     false, L"\x3010"}, // [ → 【
+        {VK_OEM_4,     true,  L"\xFF5B"}, // { → ｛
+        {VK_OEM_5,     false, L"\x3001"}, // \ → 、
+        {VK_OEM_5,     true,  L"\xFF5C"}, // | → ｜
+        {VK_OEM_6,     false, L"\x3011"}, // ] → 】
+        {VK_OEM_6,     true,  L"\xFF5D"}, // } → ｝
+        {VK_OEM_7,     false, L"\x2018"}, // ' → '
+        {VK_OEM_7,     true,  L"\x201C"}, // " → "
+        {VK_OEM_COMMA, false, L"\xFF0C"}, // , → ，
+        {VK_OEM_COMMA, true,  L"\x300A"}, // < → 《
+        {VK_OEM_PERIOD, false,L"\x3002"}, // . → 。
+        {VK_OEM_PERIOD, true,  L"\x300B"}, // > → 》
+        {VK_OEM_MINUS, false, L"\xFF0D"}, // - → －
+        {VK_OEM_MINUS, true,  L"\xFF3F"}, // _ → ＿
+        {VK_OEM_PLUS,  false, L"\xFF1D"}, // = → ＝
+        {VK_OEM_PLUS,  true,  L"\xFF0B"}, // + → ＋
+        {'0', true, L"\xFF09"},          // ) → ）
+        {'1', true, L"\xFF01"},          // ! → ！
+        {'2', true, L"\xFF20"},          // @ → ＠
+        {'3', true, L"\xFF03"},          // # → ＃
+        {'4', true, L"\xFFE5"},          // $ → ￥
+        {'5', true, L"\xFF05"},          // % → ％
+        {'6', true, L"\x2026\x2026"},    // ^ → ……
+        {'7', true, L"\xFF06"},          // & → ＆
+        {'8', true, L"\xFF0A"},          // * → ＊
+        {'9', true, L"\xFF08"},          // ( → （
+    };
+    for (auto& m : table) if (m.vk == vk && m.shift == shift) return m.full;
+    return nullptr;
+}
+
+static bool isChinesePunctVK(DWORD vk) {
+    return vk == VK_OEM_1 || vk == VK_OEM_2 || vk == VK_OEM_3 ||
+           vk == VK_OEM_4 || vk == VK_OEM_5 || vk == VK_OEM_6 ||
+           vk == VK_OEM_7 || vk == VK_OEM_COMMA || vk == VK_OEM_PERIOD ||
+           vk == VK_OEM_MINUS || vk == VK_OEM_PLUS || vk == VK_OEM_102 ||
+           vk == VK_DECIMAL || vk == VK_DIVIDE;
+}
+
 // ==================== CPinyinTextService 构造 / 析构 ====================
 CPinyinTextService::CPinyinTextService()
     : m_cRef(1), m_pThreadMgr(nullptr), m_clientId(0), m_activateFlags(0),
@@ -299,14 +349,26 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
             *pfEaten = TRUE;
             return S_OK;
         }
-        // 撇号 (分词符)
+        // 撇号 (分词符, 优先于中文标点: 缓冲非空时用于分词, 否则转全角)
         if (vk == VK_OEM_7 && !m_engine.m_buffer.empty()) {
             *pfEaten = TRUE;
             return S_OK;
         }
+        // ── 中文标点符号: 吃掉所有标点键 ──
+        if (m_settings.chinesePunctuation) {
+            // OEM 标点键 (VK_OEM_1~7, COMMA, PERIOD, MINUS, PLUS)
+            if (isChinesePunctVK(vk)) {
+                *pfEaten = TRUE;
+                return S_OK;
+            }
+            // Shift+数字键 → 全角标点 )!@#$%^&*(
+            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (shiftDown && vk >= '0' && vk <= '9') {
+                *pfEaten = TRUE;
+                return S_OK;
+            }
+        }
     }
-
-    // 左 Shift 单按: 中/英文模式切换
     // 始终监听不受中文模式限制; Shift+字母 的大写输入不受影响
     // 因为 Windows 已根据物理 Shift 状态生成了大写 VK, 应用侧看到的是大写字母
     if (!ctrlDown && !altDown && !winDown && vk == VK_LSHIFT) {
@@ -510,7 +572,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;  // 被翻页吃掉, 否则 fallthrough
     }
 
     // ── =: 下一页 (受 enableMinusEqualsPage 控制) ──
@@ -521,7 +583,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
     }
 
     // ── ,: 上一页 (受 enableCommaPeriodPage 控制) ──
@@ -532,7 +594,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
     }
 
     // ── .: 下一页 (受 enableCommaPeriodPage 控制) ──
@@ -543,7 +605,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
     }
 
     // ── Tab / Shift+Tab: 翻页 (受 enableTabPage 控制) ──
@@ -556,7 +618,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
     }
 
     // ── [: 上一页 (受 enableBracketPage 控制) ──
@@ -567,7 +629,7 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
     }
 
     // ── ]: 下一页 (受 enableBracketPage 控制) ──
@@ -578,7 +640,18 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
             showCandidateWindow();
             *pfEaten = TRUE;
         }
-        return S_OK;
+        if (*pfEaten) return S_OK;
+    }
+
+    // ── 中文标点符号: 半角 → 全角转换 (chinesePunctuation 开启, 未被翻页吃掉) ──
+    if (m_settings.chinesePunctuation) {
+        bool shiftDown2 = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        const wchar_t* full = getFullWidthPunct(vk, shiftDown2);
+        if (full) {
+            commitComposition(full);
+            *pfEaten = TRUE;
+            return S_OK;
+        }
     }
 
     // ── 字母键 A-Z: 加入拼音缓冲 ──
@@ -644,6 +717,7 @@ STDMETHODIMP CPinyinTextService::OnSetFocus(BOOL fForeground) {
             cancelComposition();
         }
         m_candidateWin.m_hasTsfCaretPos = false;
+        m_candidateWin.m_hasPreCompCaretPos = false;
         hideCandidateWindow();
     }
     return S_OK;
@@ -656,6 +730,7 @@ STDMETHODIMP CPinyinTextService::OnCompositionTerminated(TfEditCookie, ITfCompos
         m_pComposition = nullptr;
         m_bComposing = false;
         m_candidateWin.m_hasTsfCaretPos = false;
+        m_candidateWin.m_hasPreCompCaretPos = false;
     }
     return S_OK;
 }
@@ -744,6 +819,34 @@ void CPinyinTextService::startComposition(ITfContext* pContext, TfEditCookie ec)
         return;
     }
 
+    // ── 预组合光标捕获: 在组合文本插入前获取原始光标位置 ──
+    // 此时应用程序的原生选区仍然有效, GetTextExt 返回的坐标通常更可靠。
+    // Firefox 等应用在组合开始后 GetTextExt 可能返回偏移或错误的坐标,
+    // 因此在文本替换前先捕获一份"干净"的位置作为高优先级候选。
+    {
+        ITfRange* pPreCompRange = nullptr;
+        if (SUCCEEDED(tfSel.range->Clone(&pPreCompRange)) && pPreCompRange) {
+            pPreCompRange->Collapse(ec, TF_ANCHOR_END);
+            ITfContextView* pView = nullptr;
+            if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView) {
+                RECT rc = {};
+                BOOL fClipped = FALSE;
+                if (SUCCEEDED(pView->GetTextExt(ec, pPreCompRange, &rc, &fClipped))) {
+                    // 验证坐标合理性: 排除全零或明显越界的脏数据
+                    if ((rc.left != 0 || rc.top != 0 || rc.right != 0 || rc.bottom != 0) &&
+                        rc.left > -10000 && rc.top > -10000 &&
+                        rc.left < 50000 && rc.top < 50000) {
+                        m_candidateWin.m_preCompCaretPos.x = rc.left;
+                        m_candidateWin.m_preCompCaretPos.y = rc.bottom;
+                        m_candidateWin.m_hasPreCompCaretPos = true;
+                    }
+                }
+                pView->Release();
+            }
+            pPreCompRange->Release();
+        }
+    }
+
     // StartComposition 在 ITfContextComposition 接口上
     ITfContextComposition* pCompCtx = nullptr;
     if (SUCCEEDED(pContext->QueryInterface(IID_ITfContextComposition, (void**)&pCompCtx)) && pCompCtx) {
@@ -761,16 +864,22 @@ void CPinyinTextService::startComposition(ITfContext* pContext, TfEditCookie ec)
             tfSel.range->Collapse(ec, TF_ANCHOR_END);
             pContext->SetSelection(ec, 1, &tfSel);
 
-            // TSF 标准: 用 GetTextExt 获取光标屏幕坐标,
+            // TSF 标准: 用 GetTextExt 获取组合时屏幕坐标,
             // 供候选窗口定位 (解决 Firefox 等非 Win32 caret 应用的定位问题)
+            // 注意: 此坐标可能不准确, getCaretPosition() 会交叉验证 Win32 光标
             ITfContextView* pView = nullptr;
             if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView) {
                 RECT rc = {};
                 BOOL fClipped = FALSE;
                 if (SUCCEEDED(pView->GetTextExt(ec, tfSel.range, &rc, &fClipped))) {
-                    m_candidateWin.m_tsfCaretPos.x = rc.left;
-                    m_candidateWin.m_tsfCaretPos.y = rc.bottom;
-                    m_candidateWin.m_hasTsfCaretPos = true;
+                    // 验证坐标合理性
+                    if ((rc.left != 0 || rc.top != 0 || rc.right != 0 || rc.bottom != 0) &&
+                        rc.left > -10000 && rc.top > -10000 &&
+                        rc.left < 50000 && rc.top < 50000) {
+                        m_candidateWin.m_tsfCaretPos.x = rc.left;
+                        m_candidateWin.m_tsfCaretPos.y = rc.bottom;
+                        m_candidateWin.m_hasTsfCaretPos = true;
+                    }
                 }
                 pView->Release();
             }
@@ -801,15 +910,21 @@ void CPinyinTextService::updateComposition(ITfContext* pContext, TfEditCookie ec
         tfSel.style.fInterimChar = FALSE;
         pContext->SetSelection(ec, 1, &tfSel);
 
-        // TSF 标准: 用 GetTextExt 获取光标屏幕坐标, 缓存供候选窗口定位
+        // TSF 标准: 用 GetTextExt 获取组合时屏幕坐标, 缓存供候选窗口定位
+        // 注意: 此坐标可能不准确, getCaretPosition() 会交叉验证 Win32 光标
         ITfContextView* pView = nullptr;
         if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView) {
             RECT rc = {};
             BOOL fClipped = FALSE;
             if (SUCCEEDED(pView->GetTextExt(ec, pRange, &rc, &fClipped))) {
-                m_candidateWin.m_tsfCaretPos.x = rc.left;
-                m_candidateWin.m_tsfCaretPos.y = rc.bottom;
-                m_candidateWin.m_hasTsfCaretPos = true;
+                // 验证坐标合理性: 排除全零或明显越界的脏数据
+                if ((rc.left != 0 || rc.top != 0 || rc.right != 0 || rc.bottom != 0) &&
+                    rc.left > -10000 && rc.top > -10000 &&
+                    rc.left < 50000 && rc.top < 50000) {
+                    m_candidateWin.m_tsfCaretPos.x = rc.left;
+                    m_candidateWin.m_tsfCaretPos.y = rc.bottom;
+                    m_candidateWin.m_hasTsfCaretPos = true;
+                }
             }
             pView->Release();
         }
@@ -829,7 +944,7 @@ void CPinyinTextService::commitComposition(const std::wstring& text) {
             HRESULT hrSession = S_OK;
             pContext->RequestEditSession(m_clientId,
                 new CPinyinEditSession(this),
-                TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession);
+                TF_ES_SYNC | TF_ES_READWRITE, &hrSession);
             pContext->Release();
         }
         pDocMgr->Release();
@@ -841,6 +956,7 @@ void CPinyinTextService::cancelComposition() {
     m_pendingAction = ACT_CANCEL;
     // 清除 TSF 光标位置缓存
     m_candidateWin.m_hasTsfCaretPos = false;
+    m_candidateWin.m_hasPreCompCaretPos = false;
 
     ITfDocumentMgr* pDocMgr = nullptr;
     if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr)) && pDocMgr) {
@@ -849,7 +965,7 @@ void CPinyinTextService::cancelComposition() {
             HRESULT hrSession = S_OK;
             pContext->RequestEditSession(m_clientId,
                 new CPinyinEditSession(this),
-                TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession);
+                TF_ES_SYNC | TF_ES_READWRITE, &hrSession);
             pContext->Release();
         }
         pDocMgr->Release();
@@ -880,9 +996,6 @@ STDMETHODIMP CPinyinEditSession::DoEditSession(TfEditCookie ec) {
                     pRange->SetText(ec, 0,
                         svc->m_pendingCommit.c_str(),
                         (LONG)svc->m_pendingCommit.size());
-                    // TSF 标准: 提交后必须将选区置于已提交文本之后,
-                    // 否则下一次 startComposition 会在错误位置插入,
-                    // 导致输入倒序 (如记事本、资源管理器地址栏)
                     pRange->Collapse(ec, TF_ANCHOR_END);
                     TF_SELECTION tfSel;
                     tfSel.range = pRange;
@@ -900,6 +1013,16 @@ STDMETHODIMP CPinyinEditSession::DoEditSession(TfEditCookie ec) {
             svc->m_pComposition->Release();
             svc->m_pComposition = nullptr;
             svc->m_bComposing = false;
+        } else if (!svc->m_pendingCommit.empty()) {
+            // 无活动组合时直接插入文本 (中文标点、全角符号等)
+            TF_SELECTION tfSel;
+            ULONG cFetched = 0;
+            if (pContext && SUCCEEDED(pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &tfSel, &cFetched)) && cFetched > 0) {
+                tfSel.range->SetText(ec, 0, svc->m_pendingCommit.c_str(), (LONG)svc->m_pendingCommit.size());
+                tfSel.range->Collapse(ec, TF_ANCHOR_END);
+                pContext->SetSelection(ec, 1, &tfSel);
+                tfSel.range->Release();
+            }
         }
         svc->m_pendingCommit.clear();
     }
