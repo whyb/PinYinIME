@@ -77,10 +77,48 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
                     LocalFree(argv);
                     return ok ? 0 : 1;
                 }
+                if (wcscmp(argv[i], L"--register-with-ui") == 0) {
+                    // UAC 提权后的注册进度窗口
+                    LocalFree(argv);
+                    SetProcessDPIAware();
+                    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                    {
+                        Gdiplus::GdiplusStartupInput gdiSI3;
+                        ULONG_PTR gdiToken3;
+                        Gdiplus::GdiplusStartup(&gdiToken3, &gdiSI3, nullptr);
+                        INITCOMMONCONTROLSEX icex3 = { sizeof(icex3), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES };
+                        InitCommonControlsEx(&icex3);
+                        std::string configPath3 = getModuleDirectory(nullptr) + "pinyin_config.ini";
+                        g_settings.loadFromFile(configPath3);
+                        RegisterWindow::show(hInstance, nullptr, g_settings);
+                        Gdiplus::GdiplusShutdown(gdiToken3);
+                    }
+                    CoUninitialize();
+                    return 0;
+                }
                 if (wcscmp(argv[i], L"--unregister-system") == 0) {
                     bool ok = doFullUnregistration();
                     LocalFree(argv);
                     return ok ? 0 : 1;
+                }
+                if (wcscmp(argv[i], L"--uninstall-with-ui") == 0) {
+                    // UAC 提权后的卸载进度窗口
+                    LocalFree(argv);
+                    SetProcessDPIAware();
+                    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                    {
+                        Gdiplus::GdiplusStartupInput gdiSI2;
+                        ULONG_PTR gdiToken2;
+                        Gdiplus::GdiplusStartup(&gdiToken2, &gdiSI2, nullptr);
+                        INITCOMMONCONTROLSEX icex2 = { sizeof(icex2), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES };
+                        InitCommonControlsEx(&icex2);
+                        std::string configPath2 = getModuleDirectory(nullptr) + "pinyin_config.ini";
+                        g_settings.loadFromFile(configPath2);
+                        UninstallWindow::show(hInstance, nullptr, g_settings);
+                        Gdiplus::GdiplusShutdown(gdiToken2);
+                    }
+                    CoUninitialize();
+                    return 0;
                 }
                 if (wcscmp(argv[i], L"--force-kill") == 0 && i + 1 < argc) {
                     // UAC 提权后: 强制终止占用 DLL 的进程 (参数为逗号分隔的 PID 列表)

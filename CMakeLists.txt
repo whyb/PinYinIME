@@ -80,6 +80,8 @@ set(EXE_HEADERS
     ${SHARED_HEADERS}
     exe/settings_window.h
     exe/registration.h
+    exe/uninstall_window.h
+    exe/register_window.h
 )
 
 add_executable(PinyinIME WIN32 ${EXE_SOURCES} ${EXE_HEADERS})

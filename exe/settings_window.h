@@ -15,6 +15,8 @@
 #include "../shared/pinyin_settings.h"
 #include "../shared/utf_utils.h"
 #include "registration.h"
+#include "uninstall_window.h"
+#include "register_window.h"
 
 // ==================== 前向声明 ====================
 extern PinyinSettings g_settings;
@@ -276,6 +278,7 @@ struct SettingsWindow {
 
         // 标题在 WM_PAINT 中自绘, 内容向下偏移让出标题栏空间
         int gy=S(36);
+        // ━━ 基本设置 ━━
         addLabel(L"━━ 基本设置 ━━",S(15),gy,S(200),S(18));gy+=S(22);
         addCheck(L"繁体中文模式",401,S(20),gy,S(140),S(20),m_temp.useTraditional);
         addCheck(L"竖排候选框",404,S(170),gy,S(120),S(20),m_temp.verticalLayout);
@@ -284,25 +287,11 @@ struct SettingsWindow {
         HWND hCandCombo=addCombo(402,S(115),gy-S(2),S(55),S(200));
         for(int i=3;i<=9;i++){std::wstring s=std::to_wstring(i);SendMessageW(hCandCombo,CB_ADDSTRING,0,(LPARAM)s.c_str());}
         int ccIdx=m_temp.candidateCount-3;if(ccIdx<0)ccIdx=0;if(ccIdx>6)ccIdx=6;
-        SendMessageW(hCandCombo,CB_SETCURSEL,ccIdx,0);
-        addLabel(L"字体大小:",S(200),gy,S(80),S(20));
-        HWND hFsCombo=addCombo(403,S(280),gy-S(2),S(55),S(300));
-        for(int i=12;i<=36;i++){std::wstring s=std::to_wstring(i);SendMessageW(hFsCombo,CB_ADDSTRING,0,(LPARAM)s.c_str());}
-        int fsIdx=m_temp.fontSize-12;if(fsIdx<0)fsIdx=0;if(fsIdx>24)fsIdx=24;
-        SendMessageW(hFsCombo,CB_SETCURSEL,fsIdx,0);gy+=S(28);
-        addLabel(L"选择字体:",S(20),gy,S(80),S(20));
-        HWND hFontCombo=addCombo(408,S(105),gy-S(2),S(280),S(300));
-        {auto fonts=enumSystemFonts();for(const auto& f:fonts)SendMessageW(hFontCombo,CB_ADDSTRING,0,(LPARAM)f.c_str());
-         int fi=(int)SendMessageW(hFontCombo,CB_FINDSTRINGEXACT,-1,(LPARAM)m_temp.fontName.c_str());
-         if(fi>=0)SendMessageW(hFontCombo,CB_SETCURSEL,fi,0);}gy+=S(28);
+        SendMessageW(hCandCombo,CB_SETCURSEL,ccIdx,0);gy+=S(28);
 
+        // ━━ 外观配色 ━━ (预览置顶, 皮肤/字体紧随其后)
         addLabel(L"━━ 外观配色 ━━",S(15),gy,S(200),S(18));gy+=S(22);
-        addLabel(L"预设皮肤:",S(20),gy,S(80),S(20));
-        HWND hSkin=addCombo(701,S(100),gy-S(2),S(140),S(200));
-        for(int i=0;i<PinyinSettings::SKIN_COUNT;i++)SendMessageW(hSkin,CB_ADDSTRING,0,(LPARAM)PinyinSettings::skins[i].name);
-        SendMessageW(hSkin,CB_SETCURSEL,m_selectedSkin,0);
-        addButton(L"🎨 自定义主色调",702,S(255),gy-S(2),S(140),S(22));gy+=S(28);
-
+        // 候选框预览 — 放在外观配色第一排
         addLabel(L"候选框预览:",S(20),gy,S(80),S(20));
         WNDCLASSEXW wc={};wc.cbSize=sizeof(wc);wc.lpfnWndProc=skinPreviewProc;wc.hInstance=hInst;
         wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
@@ -313,10 +302,27 @@ struct SettingsWindow {
         RECT prc; GetWindowRect(m_hSkinPreview,&prc);
         int prevH=prc.bottom-prc.top;
         gy+=(std::max)(S(48),prevH)+S(6);
-
+        // 预设皮肤 + 自定义颜色 — 挪到预览下方
+        addLabel(L"预设皮肤:",S(20),gy,S(80),S(20));
+        HWND hSkin=addCombo(701,S(100),gy-S(2),S(140),S(200));
+        for(int i=0;i<PinyinSettings::SKIN_COUNT;i++)SendMessageW(hSkin,CB_ADDSTRING,0,(LPARAM)PinyinSettings::skins[i].name);
+        SendMessageW(hSkin,CB_SETCURSEL,m_selectedSkin,0);
+        addButton(L"🎨 自定义主色调",702,S(255),gy-S(2),S(140),S(22));gy+=S(28);
+        // 字体大小 + 选择字体 — 从基本设置挪到外观配色
+        addLabel(L"字体大小:",S(20),gy,S(80),S(20));
+        HWND hFsCombo=addCombo(403,S(105),gy-S(2),S(55),S(200));
+        for(int i=12;i<=36;i++){std::wstring s=std::to_wstring(i);SendMessageW(hFsCombo,CB_ADDSTRING,0,(LPARAM)s.c_str());}
+        int fsIdx=m_temp.fontSize-12;if(fsIdx<0)fsIdx=0;if(fsIdx>24)fsIdx=24;
+        SendMessageW(hFsCombo,CB_SETCURSEL,fsIdx,0);
+        addLabel(L"选择字体:",S(200),gy,S(80),S(20));
+        HWND hFontCombo=addCombo(408,S(285),gy-S(2),S(220),S(300));
+        {auto fonts=enumSystemFonts();for(const auto& f:fonts)SendMessageW(hFontCombo,CB_ADDSTRING,0,(LPARAM)f.c_str());
+         int fi=(int)SendMessageW(hFontCombo,CB_FINDSTRINGEXACT,-1,(LPARAM)m_temp.fontName.c_str());
+         if(fi>=0)SendMessageW(hFontCombo,CB_SETCURSEL,fi,0);}gy+=S(28);
+        // 显示选项
         addCheck(L"显示设置齿轮",924,S(20),gy,S(140),S(20),m_temp.showSettingsGear);
         addCheck(L"圆角候选框",926,S(175),gy,S(140),S(20),m_temp.roundedCorner);gy+=S(24);
-
+        // 用户词典管理
         addButton(L"📝 管理用户词典...",801,S(20),gy,S(170),S(26));gy+=S(32);
 
         addLabel(L"━━ 模糊音设置 ━━",S(15),gy,S(200),S(18));gy+=S(22);
@@ -545,8 +551,14 @@ struct SettingsWindow {
             // ── 候选窗显示 checkbox (影响预览) ──
             if(id==924){self->m_temp.showSettingsGear=(IsDlgButtonChecked(hwnd,924)==BST_CHECKED);self->resizePreview();return 0;}
             if(id==926){self->m_temp.roundedCorner=(IsDlgButtonChecked(hwnd,926)==BST_CHECKED);self->resizePreview();return 0;}
-            if(id==910){/* 注册到系统 — TSF 方式 */doFullRegistration(hwnd);return 0;}
-            if(id==911){/* 从系统卸载 */doFullUnregistration(hwnd);return 0;}
+            if(id==910){/* 注册到系统 — 打开进度窗口 */
+                HINSTANCE hInst3=(HINSTANCE)GetWindowLongPtrW(hwnd,GWLP_HINSTANCE);
+                RegisterWindow::show(hInst3,hwnd,g_settings);
+                return 0;}
+            if(id==911){/* 从系统卸载 — 打开进度窗口 */
+                HINSTANCE hInst2=(HINSTANCE)GetWindowLongPtrW(hwnd,GWLP_HINSTANCE);
+                UninstallWindow::show(hInst2,hwnd,g_settings);
+                return 0;}
             if(id==901){/* 保存 */
                 self->m_temp.useTraditional=(IsDlgButtonChecked(hwnd,401)==BST_CHECKED);
                 self->m_temp.verticalLayout=(IsDlgButtonChecked(hwnd,404)==BST_CHECKED);
