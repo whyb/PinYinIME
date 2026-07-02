@@ -73,8 +73,12 @@ struct SettingsWindow {
             SelectObject(hdc, old); DeleteObject(hFont);
             ReleaseDC(hwnd, hdc);
             int cr = (std::max)(6, (std::min)(12, (int)(tm.tmHeight * 2 / 3)));
-            HRGN hRgn = CreateRoundRectRgn(0, 0, rc.right + 1, rc.bottom + 1, cr * 2, cr * 2);
-            SetWindowRgn(hwnd, hRgn, TRUE);
+            if (self->m_temp.roundedCorner) {
+                HRGN hRgn = CreateRoundRectRgn(0, 0, rc.right + 1, rc.bottom + 1, cr * 2, cr * 2);
+                SetWindowRgn(hwnd, hRgn, TRUE);
+            } else {
+                SetWindowRgn(hwnd, nullptr, TRUE);
+            }
         }
 
         if (msg == WM_PAINT && self) {
@@ -91,13 +95,21 @@ struct SettingsWindow {
                 Gdiplus::Graphics graphics(hdc);
                 graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                 int w=rc.right,h=rc.bottom,cr=(std::max)(6,(std::min)(12,(int)(tm.tmHeight*2/3)));
+                if(!self->m_temp.roundedCorner) cr=0;
                 auto makeRR=[](Gdiplus::GraphicsPath& p,int x,int y,int rw,int rh,int rad){
                     p.Reset();p.StartFigure();
-                    int dia = rad * 2;
-                    p.AddArc(x, y, dia, dia, 180, 90);
-                    p.AddArc(x + rw - dia, y, dia, dia, 270, 90);
-                    p.AddArc(x + rw - dia, y + rh - dia, dia, dia, 0, 90);
-                    p.AddArc(x, y + rh - dia, dia, dia, 90, 90);
+                    if(rad<=0){
+                        p.AddLine(Gdiplus::Point(x,y),Gdiplus::Point(x+rw,y));
+                        p.AddLine(Gdiplus::Point(x+rw,y),Gdiplus::Point(x+rw,y+rh));
+                        p.AddLine(Gdiplus::Point(x+rw,y+rh),Gdiplus::Point(x,y+rh));
+                        p.AddLine(Gdiplus::Point(x,y+rh),Gdiplus::Point(x,y));
+                    }else{
+                        int dia = rad * 2;
+                        p.AddArc(x, y, dia, dia, 180, 90);
+                        p.AddArc(x + rw - dia, y, dia, dia, 270, 90);
+                        p.AddArc(x + rw - dia, y + rh - dia, dia, dia, 0, 90);
+                        p.AddArc(x, y + rh - dia, dia, dia, 90, 90);
+                    }
                     p.CloseFigure();
                 };
                 COLORREF bc=self->m_temp.borderColor,bgc=self->m_temp.bgColor;
@@ -106,7 +118,8 @@ struct SettingsWindow {
                 int dir=(bgBright<128)?1:-1;
                 auto clampC=[](int v)->int{return v<0?0:(v>255?255:v);};
                 for(int layer=0;layer<4;layer++){
-                    int off=layer,lw=w-off*2,lh=h-off*2,lcr=cr-off;if(lcr<2)lcr=2;
+                    int off=layer,lw=w-off*2,lh=h-off*2,lcr=cr-off;
+                    if(cr>0 && lcr<2) lcr=2;
                     int delta=(layer==0)?40:(layer==1)?18:0;
                     COLORREF col=(layer<3)?RGB(clampC(rr+delta*dir),clampC(rg+delta*dir),clampC(rb+delta*dir)):bgc;
                     Gdiplus::SolidBrush br(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
@@ -124,7 +137,7 @@ struct SettingsWindow {
                 GetTextExtentPoint32W(hdc,L"1.",2,&sz1);
                 GetTextExtentPoint32W(hdc,L"你好",2,&sz2);
                 int totalW=sz1.cx+sz2.cx, selPad=4;
-                int selR=(std::max)(2,(std::min)(4,(int)(tm.tmHeight/5)));
+                int selR=self->m_temp.roundedCorner?(std::max)(2,(std::min)(4,(int)(tm.tmHeight/5))):0;
                 RECT selRc={x-selPad, textY-1, x+totalW+selPad, textY+tm.tmHeight-1};
                 {
                     Gdiplus::Graphics g(hdc);
@@ -133,11 +146,18 @@ struct SettingsWindow {
                     Gdiplus::SolidBrush selBr(Gdiplus::Color(255, GetRValue(tc), GetGValue(tc), GetBValue(tc)));
                     Gdiplus::GraphicsPath sp;
                     sp.StartFigure();
-                    int dia = selR * 2;
-                    sp.AddArc(selRc.left, selRc.top, dia, dia, 180, 90);
-                    sp.AddArc(selRc.right - dia, selRc.top, dia, dia, 270, 90);
-                    sp.AddArc(selRc.right - dia, selRc.bottom - dia, dia, dia, 0, 90);
-                    sp.AddArc(selRc.left, selRc.bottom - dia, dia, dia, 90, 90);
+                    if(selR<=0){
+                        sp.AddLine(Gdiplus::Point(selRc.left,selRc.top),Gdiplus::Point(selRc.right,selRc.top));
+                        sp.AddLine(Gdiplus::Point(selRc.right,selRc.top),Gdiplus::Point(selRc.right,selRc.bottom));
+                        sp.AddLine(Gdiplus::Point(selRc.right,selRc.bottom),Gdiplus::Point(selRc.left,selRc.bottom));
+                        sp.AddLine(Gdiplus::Point(selRc.left,selRc.bottom),Gdiplus::Point(selRc.left,selRc.top));
+                    }else{
+                        int dia = selR * 2;
+                        sp.AddArc(selRc.left, selRc.top, dia, dia, 180, 90);
+                        sp.AddArc(selRc.right - dia, selRc.top, dia, dia, 270, 90);
+                        sp.AddArc(selRc.right - dia, selRc.bottom - dia, dia, dia, 0, 90);
+                        sp.AddArc(selRc.left, selRc.bottom - dia, dia, dia, 90, 90);
+                    }
                     sp.CloseFigure();
                     g.FillPath(&selBr,&sp);
                 }
@@ -154,47 +174,6 @@ struct SettingsWindow {
             GetTextExtentPoint32W(hdc,L"3.",2,&sz);x+=sz.cx;
             SetTextColor(hdc,self->m_temp.textColor);TextOutW(hdc,x,textY,L"你好",2);
             GetTextExtentPoint32W(hdc,L"你好",2,&sz);x+=sz.cx+S(4);
-            // ── 翻页按钮 (与真实候选框一致的 GDI+ 圆角按钮, 受显示设置控制) ──
-            if (self->m_temp.showPageButtons) {
-            SIZE btnSz; GetTextExtentPoint32W(hdc,L"◀",1,&btnSz);
-            int btnPX=6,btnPY=2,btnW=btnSz.cx+btnPX*2,btnH=btnSz.cy+btnPY*2;
-            int btnR=(std::max)(3,(std::min)(5,(int)(tm.tmHeight/5)));
-            auto drawPBtn=[&](int bx,const wchar_t* label){
-                RECT br={bx,textY,bx+btnW,textY+btnH};
-                {   Gdiplus::Graphics g(hdc);
-                    g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-                    COLORREF bg=self->m_temp.bgColor;
-                    int r=GetRValue(bg),gr=GetGValue(bg),b=GetBValue(bg);
-                    int bgBright=(r*299+gr*587+b*114)/1000;
-                    int delta=bgBright>128?-24:24;
-                    auto clmp=[](int v)->int{return v<0?0:(v>255?255:v);};
-                    COLORREF btnBg=RGB(clmp(r+delta),clmp(gr+delta),clmp(b+delta));
-                    COLORREF bc=self->m_temp.borderColor;
-                    // FillPath 两层同心: 边框层 + 按钮底色
-                    for(int lay=0;lay<2;lay++){
-                        int off=lay, lx=br.left+off, ly=br.top+off;
-                        int lw=(br.right-br.left)-off*2, lh=(br.bottom-br.top)-off*2;
-                        int rad=btnR-off; if(rad<1)rad=1;
-                        COLORREF col=(lay==0)?bc:btnBg;
-                        Gdiplus::SolidBrush br2(Gdiplus::Color(255, GetRValue(col), GetGValue(col), GetBValue(col)));
-                        Gdiplus::GraphicsPath pt;
-                        pt.StartFigure();
-                        int dia = rad * 2;
-                        pt.AddArc(lx, ly, dia, dia, 180, 90);
-                        pt.AddArc(lx + lw - dia, ly, dia, dia, 270, 90);
-                        pt.AddArc(lx + lw - dia, ly + lh - dia, dia, dia, 0, 90);
-                        pt.AddArc(lx, ly + lh - dia, dia, dia, 90, 90);
-                        pt.CloseFigure();
-                        g.FillPath(&br2,&pt);
-                    }
-                }
-                SetTextColor(hdc,self->m_temp.textColor);
-                RECT cr=br; DrawTextW(hdc,label,-1,&cr,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-                return br.right;
-            };
-            x=drawPBtn(x,L"◀"); x+=6;
-            x=drawPBtn(x,L"▶"); x+=8;
-            }
             // 齿轮图标 (受显示设置控制)
             if (self->m_temp.showSettingsGear) {
             SetTextColor(hdc,RGB(80,80,200));
@@ -268,11 +247,6 @@ struct SettingsWindow {
             GetTextExtentPoint32W(hdc, c.text, (int)wcslen(c.text), &szt);
             x += szi.cx + szt.cx + S(8);
         }
-        if (m_temp.showPageButtons) {
-            SIZE btnSz; GetTextExtentPoint32W(hdc, L"◀", 1, &btnSz);
-            int btnW = btnSz.cx + S(12);
-            x += btnW + S(6) + btnW + S(8);
-        }
         if (m_temp.showSettingsGear) {
             SIZE gearSz; GetTextExtentPoint32W(hdc, L"⚙", 1, &gearSz);
             x += gearSz.cx + S(12);
@@ -282,6 +256,14 @@ struct SettingsWindow {
         if (width > maxW) width = maxW;
         SelectObject(hdc, hOldFont); DeleteObject(hFont); ReleaseDC(m_hSkinPreview, hdc);
         SetWindowPos(m_hSkinPreview, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER);
+        // 更新预览窗口圆角区域
+        if (m_temp.roundedCorner) {
+            int cr = (std::max)(6, (std::min)(12, (int)(tm.tmHeight * 2 / 3)));
+            HRGN hRgn = CreateRoundRectRgn(0, 0, width + 1, height + 1, cr * 2, cr * 2);
+            SetWindowRgn(m_hSkinPreview, hRgn, TRUE);
+        } else {
+            SetWindowRgn(m_hSkinPreview, nullptr, TRUE);
+        }
         InvalidateRect(m_hSkinPreview, nullptr, TRUE);
     }
 
@@ -333,7 +315,7 @@ struct SettingsWindow {
         gy+=(std::max)(S(48),prevH)+S(6);
 
         addCheck(L"显示设置齿轮",924,S(20),gy,S(140),S(20),m_temp.showSettingsGear);
-        addCheck(L"显示翻页按钮",925,S(175),gy,S(140),S(20),m_temp.showPageButtons);gy+=S(24);
+        addCheck(L"圆角候选框",926,S(175),gy,S(140),S(20),m_temp.roundedCorner);gy+=S(24);
 
         addButton(L"📝 管理用户词典...",801,S(20),gy,S(170),S(26));gy+=S(32);
 
@@ -562,7 +544,7 @@ struct SettingsWindow {
             if(id==923){self->m_temp.enableBracketPage=(IsDlgButtonChecked(hwnd,923)==BST_CHECKED);return 0;}
             // ── 候选窗显示 checkbox (影响预览) ──
             if(id==924){self->m_temp.showSettingsGear=(IsDlgButtonChecked(hwnd,924)==BST_CHECKED);self->resizePreview();return 0;}
-            if(id==925){self->m_temp.showPageButtons=(IsDlgButtonChecked(hwnd,925)==BST_CHECKED);self->resizePreview();return 0;}
+            if(id==926){self->m_temp.roundedCorner=(IsDlgButtonChecked(hwnd,926)==BST_CHECKED);self->resizePreview();return 0;}
             if(id==910){/* 注册到系统 — TSF 方式 */doFullRegistration(hwnd);return 0;}
             if(id==911){/* 从系统卸载 */doFullUnregistration(hwnd);return 0;}
             if(id==901){/* 保存 */
@@ -591,7 +573,7 @@ struct SettingsWindow {
                 self->m_temp.enableTabPage=(IsDlgButtonChecked(hwnd,922)==BST_CHECKED);
                 self->m_temp.enableBracketPage=(IsDlgButtonChecked(hwnd,923)==BST_CHECKED);
                 self->m_temp.showSettingsGear=(IsDlgButtonChecked(hwnd,924)==BST_CHECKED);
-                self->m_temp.showPageButtons=(IsDlgButtonChecked(hwnd,925)==BST_CHECKED);
+                self->m_temp.roundedCorner=(IsDlgButtonChecked(hwnd,926)==BST_CHECKED);
                 g_settings=self->m_temp;
                 g_settings.saveToFile(getModuleDirectory(nullptr)+"pinyin_config.ini");
                 DestroyWindow(hwnd);return 0;}

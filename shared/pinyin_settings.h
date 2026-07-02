@@ -48,7 +48,7 @@ struct PinyinSettings {
     bool enableBracketPage = true;       // 启用 [/] 翻页
     // === 候选窗显示 ===
     bool showSettingsGear = true;        // 显示设置齿轮 ⚙
-    bool showPageButtons = true;         // 显示翻页按钮 ◀▶
+    bool roundedCorner = true;           // 候选框圆角
 
 
     // 预设皮肤
@@ -109,7 +109,7 @@ struct PinyinSettings {
             else if (key == "enableTabPage") enableTabPage = (val == "1");
             else if (key == "enableBracketPage") enableBracketPage = (val == "1");
             else if (key == "showSettingsGear") showSettingsGear = (val == "1");
-            else if (key == "showPageButtons") showPageButtons = (val == "1");
+            else if (key == "roundedCorner") roundedCorner = (val == "1");
         }
         return true;
     }
@@ -144,7 +144,7 @@ struct PinyinSettings {
         fout << "enableTabPage=" << enableTabPage << "\n";
         fout << "enableBracketPage=" << enableBracketPage << "\n";
         fout << "showSettingsGear=" << showSettingsGear << "\n";
-        fout << "showPageButtons=" << showPageButtons << "\n";
+        fout << "roundedCorner=" << roundedCorner << "\n";
         return true;
     }
 };

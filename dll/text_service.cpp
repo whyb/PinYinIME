@@ -365,7 +365,8 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
         }
     }
     // 始终监听 Shift 切换中英文 (不受中文模式限制)
-    if (!ctrlDown && !altDown && !winDown && (vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+    // TSF 可能传 VK_SHIFT(0x10) 而非 VK_LSHIFT/VK_RSHIFT，需同时判断
+    if (!ctrlDown && !altDown && !winDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
         *pfEaten = TRUE;
     }
 
@@ -391,8 +392,8 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
                  || (GetAsyncKeyState(VK_RWIN)    & 0x8000) != 0;
 
     // ── Shift 切换中/英文模式 ──
-    // 单按 Shift: 切换模式; 如果有未提交拼音先提交为英文再切换
-    if (!ctrlDown && !altDown && !winDown && (vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+    // TSF 可能传 VK_SHIFT(0x10) 而非 VK_LSHIFT/VK_RSHIFT，需同时判断
+    if (!ctrlDown && !altDown && !winDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
         if (m_chineseMode && !m_engine.m_buffer.empty()) {
             // 提交原始拼音为英文文本 (类似按 Enter 提交)
             std::string rawText = m_engine.m_buffer;
