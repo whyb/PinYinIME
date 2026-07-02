@@ -2,6 +2,7 @@
 // 替换旧的 registerIMEToSystem, 使用 COM + TSF 标准 API
 #pragma once
 #include <windows.h>
+#include <commctrl.h>
 #include <msctf.h>
 #include <combaseapi.h>
 #include <tlhelp32.h>
@@ -208,10 +209,80 @@ showResult:
     return failCount == 0;
 }
 
+// ==================== TaskDialog 动态加载 (避免导入表序数 345) ====================
+// TaskDialogIndirect 在 comctl32.dll 中仅按序数(345)导出, 直接链接会导致
+// EXE 启动时 Windows 加载器报告 "无法定位序数 345", 因此改用动态加载。
+inline HRESULT DynTaskDialogIndirect(
+    const TASKDIALOGCONFIG* pTaskConfig,
+    int* pnButton,
+    int* pnRadioButton,
+    BOOL* pfVerificationFlagChecked)
+{
+    HMODULE hComCtl = LoadLibraryW(L"comctl32.dll");
+    if (!hComCtl) return E_NOTIMPL;
+
+    typedef HRESULT (WINAPI* Fn)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+    auto pfn = (Fn)GetProcAddress(hComCtl, "TaskDialogIndirect");
+    if (!pfn) {
+        FreeLibrary(hComCtl);
+        return E_NOTIMPL;
+    }
+
+    HRESULT hr = pfn(pTaskConfig, pnButton, pnRadioButton, pfVerificationFlagChecked);
+    FreeLibrary(hComCtl);
+    return hr;
+}
+
+// ==================== 占用 DLL 的进程信息 ====================
+struct LockedProcess {
+    std::wstring name;
+    DWORD pid;
+};
+
+// ==================== 强行结束进程列表 ====================
+inline int forceKillProcessList(const std::vector<LockedProcess>& procs) {
+    int killed = 0;
+    for (auto& p : procs) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, p.pid);
+        if (hProc) {
+            if (TerminateProcess(hProc, 0)) {
+                killed++;
+            }
+            CloseHandle(hProc);
+        }
+    }
+    return killed;
+}
+
+// 解析逗号分隔的 PID 列表并强制终止 (供 UAC 提权后的进程使用)
+inline void forceKillByPidString(const std::wstring& pidList) {
+    if (pidList.empty()) return;
+    std::wstring remaining = pidList;
+    size_t comma = 0;
+    while ((comma = remaining.find(L',')) != std::wstring::npos || !remaining.empty()) {
+        std::wstring token;
+        if (comma != std::wstring::npos) {
+            token = remaining.substr(0, comma);
+            remaining = remaining.substr(comma + 1);
+        } else {
+            token = remaining;
+            remaining.clear();
+        }
+        if (token.empty()) continue;
+        DWORD pid = (DWORD)_wtoi(token.c_str());
+        if (pid == 0) continue;
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (hProc) {
+            TerminateProcess(hProc, 0);
+            CloseHandle(hProc);
+        }
+    }
+}
+
 // ==================== 查找并释放占用 DLL 的进程 ====================
-// 返回仍占用 DLL 的进程名列表 (这些进程可能需要手动关闭)
-inline std::vector<std::wstring> findAndReleaseDllLocks(const wchar_t* dllPath) {
-    std::vector<std::wstring> remaining;
+// 返回仍占用 DLL 的进程列表 (含 PID, 供后续强制终止)
+inline std::vector<LockedProcess> findAndReleaseDllLocks(const wchar_t* dllPath) {
+    std::vector<LockedProcess> remaining;
     std::wstring dllName = dllPath;
     size_t pos = dllName.find_last_of(L"\\/");
     if (pos != std::wstring::npos) dllName = dllName.substr(pos + 1);
@@ -253,7 +324,6 @@ inline std::vector<std::wstring> findAndReleaseDllLocks(const wchar_t* dllPath) 
 
             if (found) {
                 std::wstring procName(pe.szExeFile);
-                // 转小写用于比较
                 std::wstring lowerName = procName;
                 for (auto& c : lowerName) c = towlower(c);
 
@@ -261,14 +331,12 @@ inline std::vector<std::wstring> findAndReleaseDllLocks(const wchar_t* dllPath) 
                     // 安全进程: 直接终止 (它们会自动重启且不加载我们的 DLL)
                     HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
                     if (hProc) {
-                        if (TerminateProcess(hProc, 0)) {
-                            // 成功杀掉
-                        }
+                        TerminateProcess(hProc, 0);
                         CloseHandle(hProc);
                     }
                 } else {
-                    // 其他进程: 记录下来让用户手动关闭
-                    remaining.push_back(procName);
+                    // 其他进程: 记录下来 (含 PID, 供强制终止功能使用)
+                    remaining.push_back({procName, pe.th32ProcessID});
                 }
             }
         } while (Process32NextW(hSnapshot, &pe));
@@ -416,14 +484,16 @@ inline bool doFullUnregistration(HWND hParent = nullptr) {
     }
 
     // ── 4. 清理仍占用 DLL 的进程 ──
+    std::vector<LockedProcess> remainingLocked;
     {
-        auto locked = findAndReleaseDllLocks(dllPath.c_str());
-        if (locked.empty()) {
+        remainingLocked = findAndReleaseDllLocks(dllPath.c_str());
+        if (remainingLocked.empty()) {
             logOk(L"无其他进程占用 DLL");
         } else {
-            for (auto& name : locked) {
-                details += L"  ⚠️ 仍被占用: " + name + L"\n";
+            for (auto& lp : remainingLocked) {
+                details += L"  ⚠️ 仍被占用: " + lp.name + L" [PID:" + std::to_wstring(lp.pid) + L"]\n";
             }
+            failCount++;  // 有残留进程算作一项失败
         }
     }
 
@@ -459,7 +529,91 @@ inline bool doFullUnregistration(HWND hParent = nullptr) {
         msg += L"• 如 DLL 仍被占用, 请关闭所有使用该输入法的程序\n";
         msg += L"• 或注销/重启 Windows 后即可替换 DLL 文件\n";
         msg += L"• 托盘图标 (PinyinIME.exe) 不受影响\n";
-        MessageBoxW(hParent, msg.c_str(), L"PinyinIME 系统卸载", MB_OK | MB_ICONINFORMATION);
+
+        if (!remainingLocked.empty()) {
+            // ── 有残留占用进程: 使用 TaskDialog 提供 "强行结束" 按钮 ──
+            TASKDIALOGCONFIG tdc = {};
+            tdc.cbSize = sizeof(tdc);
+            tdc.hwndParent = hParent;
+            tdc.dwFlags = TDF_SIZE_TO_CONTENT | TDF_ALLOW_DIALOG_CANCELLATION;
+            tdc.pszWindowTitle = L"PinyinIME 系统卸载";
+            tdc.pszMainInstruction = L"⚠ DLL 文件仍被占用";
+            tdc.pszContent = msg.c_str();
+            tdc.pszMainIcon = TD_WARNING_ICON;
+
+            TASKDIALOG_BUTTON buttons[3] = {
+                { 1001, L"🔪 强行结束占用中的进程" },
+                { IDOK,     L"确定 (稍后手动处理)" },
+                { IDCANCEL, L"取消" },
+            };
+            tdc.pButtons = buttons;
+            tdc.cButtons = 3;
+            tdc.nDefaultButton = 1001;  // 默认选中强制结束
+
+            int nButton = 0;
+            HRESULT hr = DynTaskDialogIndirect(&tdc, &nButton, nullptr, nullptr);
+
+            // 如果 TaskDialog 不可用, 回退到普通 MessageBox
+            if (FAILED(hr)) {
+                int mb = MessageBoxW(hParent, msg.c_str(),
+                    L"PinyinIME 系统卸载", MB_OKCANCEL | MB_ICONWARNING);
+                if (mb == IDOK && !remainingLocked.empty()) {
+                    // 用户点确定, 尝试直接杀进程
+                    if (IsRunningAsAdmin()) {
+                        forceKillProcessList(remainingLocked);
+                    } else {
+                        std::wstring pidList;
+                        for (size_t i = 0; i < remainingLocked.size(); i++) {
+                            if (i > 0) pidList += L",";
+                            pidList += std::to_wstring(remainingLocked[i].pid);
+                        }
+                        RelaunchWithUAC((L"--force-kill " + pidList).c_str());
+                    }
+                }
+                nButton = IDCANCEL;  // 跳过后续处理
+            }
+
+            if (hr == S_OK && nButton == 1001) {
+                // 用户点击了 "强行结束占用中的进程"
+                if (IsRunningAsAdmin()) {
+                    // 已有管理员权限, 直接杀
+                    int killed = forceKillProcessList(remainingLocked);
+                    std::wstring killMsg = L"已终止 " + std::to_wstring(killed) + L" / "
+                        + std::to_wstring((int)remainingLocked.size()) + L" 个进程。";
+                    if (killed < (int)remainingLocked.size()) {
+                        killMsg += L"\n\n部分进程因权限不足无法终止。";
+                    }
+                    MessageBoxW(hParent, killMsg.c_str(),
+                        L"PinyinIME — 进程终止结果", MB_OK | MB_ICONINFORMATION);
+                } else {
+                    // 需要提权: 构建 PID 列表并 UAC 执行
+                    std::wstring pidList;
+                    for (size_t i = 0; i < remainingLocked.size(); i++) {
+                        if (i > 0) pidList += L",";
+                        pidList += std::to_wstring(remainingLocked[i].pid);
+                    }
+                    std::wstring args = L"--force-kill ";
+                    args += pidList;
+
+                    bool uacOk = RelaunchWithUAC(args.c_str());
+                    if (uacOk) {
+                        MessageBoxW(hParent,
+                            L"已在管理员模式下终止占用进程。",
+                            L"PinyinIME — 进程终止完成",
+                            MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxW(hParent,
+                            L"UAC 提权失败或用户取消了操作。\n\n"
+                            L"请右键以管理员身份运行 PinyinIME.exe 后重试卸载。",
+                            L"PinyinIME — 提权失败",
+                            MB_OK | MB_ICONERROR);
+                    }
+                }
+            }
+        } else {
+            // 无残留进程: 普通 MessageBox
+            MessageBoxW(hParent, msg.c_str(), L"PinyinIME 系统卸载", MB_OK | MB_ICONINFORMATION);
+        }
     }
 
     return failCount == 0;

@@ -100,13 +100,19 @@ set_target_properties(PinyinIME PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 
-# 复制词库到 EXE 输出目录 (设置文件需要)
+# 复制词库和批处理文件到 EXE 输出目录 (设置文件需要)
 add_custom_command(TARGET PinyinIME POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:PinyinIME>/cn_dicts"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/rime-ice/cn_dicts"
         "$<TARGET_FILE_DIR:PinyinIME>/cn_dicts"
-    COMMENT "Copying rime-ice dictionaries to EXE output..."
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/register.bat"
+        "$<TARGET_FILE_DIR:PinyinIME>/register.bat"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/unregister.bat"
+        "$<TARGET_FILE_DIR:PinyinIME>/unregister.bat"
+    COMMENT "Copying rime-ice dictionaries and batch files to EXE output..."
 )
 
 # ==================== 安装 ====================
@@ -118,6 +124,10 @@ install(TARGETS PinyinIMETSF PinyinIME
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/rime-ice/cn_dicts/
     DESTINATION cn_dicts
     FILES_MATCHING PATTERN "*.dict.yaml"
+)
+
+install(FILES ${CMAKE_SOURCE_DIR}/register.bat ${CMAKE_SOURCE_DIR}/unregister.bat
+    DESTINATION .
 )
 
 # ==================== 输出信息 ====================

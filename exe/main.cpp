@@ -65,8 +65,8 @@ static LRESULT CALLBACK mainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ==================== WinMain ====================
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
-    // ── 命令行: --register-system / --unregister-system ──
-    // 这两个是管理命令, 不进入正常的设置/托盘流程
+    // ── 命令行: --register-system / --unregister-system / --force-kill ──
+    // 这些是管理命令, 不进入正常的设置/托盘流程
     {
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
@@ -81,6 +81,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
                     bool ok = doFullUnregistration();
                     LocalFree(argv);
                     return ok ? 0 : 1;
+                }
+                if (wcscmp(argv[i], L"--force-kill") == 0 && i + 1 < argc) {
+                    // UAC 提权后: 强制终止占用 DLL 的进程 (参数为逗号分隔的 PID 列表)
+                    forceKillByPidString(argv[i + 1]);
+                    LocalFree(argv);
+                    return 0;
                 }
             }
             LocalFree(argv);

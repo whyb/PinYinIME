@@ -299,11 +299,6 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
             *pfEaten = TRUE;
             return S_OK;
         }
-        // Shift (提交拼音 + 切换)
-        if ((vk == VK_LSHIFT || vk == VK_RSHIFT) && !m_engine.m_buffer.empty()) {
-            *pfEaten = TRUE;
-            return S_OK;
-        }
         // PageUp / PageDown: 始终有效翻页
         if ((vk == VK_PRIOR || vk == VK_NEXT) && !m_engine.m_candidates.empty()) {
             *pfEaten = TRUE;
@@ -369,9 +364,8 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
             }
         }
     }
-    // 始终监听不受中文模式限制; Shift+字母 的大写输入不受影响
-    // 因为 Windows 已根据物理 Shift 状态生成了大写 VK, 应用侧看到的是大写字母
-    if (!ctrlDown && !altDown && !winDown && vk == VK_LSHIFT) {
+    // 始终监听 Shift 切换中英文 (不受中文模式限制)
+    if (!ctrlDown && !altDown && !winDown && (vk == VK_LSHIFT || vk == VK_RSHIFT)) {
         *pfEaten = TRUE;
     }
 
@@ -396,13 +390,22 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
     bool winDown  = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
                  || (GetAsyncKeyState(VK_RWIN)    & 0x8000) != 0;
 
-    // ── 左 Shift 切换中/英文模式 
-    // 单按 Shift: 切换模式; Shift+字母: 大写输入 (不受影响)
-    if (!ctrlDown && !altDown && !winDown && vk == VK_LSHIFT) {
+    // ── Shift 切换中/英文模式 ──
+    // 单按 Shift: 切换模式; 如果有未提交拼音先提交为英文再切换
+    if (!ctrlDown && !altDown && !winDown && (vk == VK_LSHIFT || vk == VK_RSHIFT)) {
         if (m_chineseMode && !m_engine.m_buffer.empty()) {
-            cancelComposition();
+            // 提交原始拼音为英文文本 (类似按 Enter 提交)
+            std::string rawText = m_engine.m_buffer;
+            rawText.erase(std::remove(rawText.begin(), rawText.end(), '\''), rawText.end());
+            m_engine.clear();
+            hideCandidateWindow();
+            commitComposition(utf8ToWide(rawText));
         }
         m_chineseMode = !m_chineseMode;
+        if (!m_chineseMode) {
+            m_engine.clear();
+            hideCandidateWindow();
+        }
         *pfEaten = TRUE;
         return S_OK;
     }
@@ -427,18 +430,6 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         return S_OK;
     }
 
-    // ── Shift: 提交拼音 + 切换模式 ──
-    if ((vk == VK_LSHIFT || vk == VK_RSHIFT) && !m_engine.m_buffer.empty()) {
-        std::string rawText = m_engine.m_buffer;
-        rawText.erase(std::remove(rawText.begin(), rawText.end(), '\''), rawText.end());
-        m_engine.clear();
-        hideCandidateWindow();
-        commitComposition(utf8ToWide(rawText));
-        m_chineseMode = !m_chineseMode;
-        *pfEaten = TRUE;
-        return S_OK;
-    }
-
     // ── Escape: 取消组合 ──
     if (vk == VK_ESCAPE) {
         if (!m_engine.m_buffer.empty()) {
@@ -455,23 +446,24 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         if (!m_engine.m_buffer.empty()) {
             m_engine.backspace();
             if (m_engine.m_buffer.empty()) {
+                // 缓冲区删空: 结束组合, 隐藏候选窗
                 cancelComposition();
                 hideCandidateWindow();
             } else {
+                // 缓冲区非空: 更新组合文本 (通过异步编辑会话, 与字母键路径一致)
+                // 关键: 必须通过 m_pendingAction = ACT_UPDATE 让 DoEditSession
+                // 使用有效 edit cookie 调用 SetText, 而不能直接传 (TfEditCookie)0
                 showCandidateWindow();
-                // 更新组合文本
                 if (m_bComposing && pContext) {
                     ITfDocumentMgr* pDocMgr = nullptr;
                     if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr)) && pDocMgr) {
                         ITfContext* pCtx = nullptr;
                         if (SUCCEEDED(pDocMgr->GetTop(&pCtx)) && pCtx) {
                             HRESULT hrSession = S_OK;
-                            if (SUCCEEDED(pCtx->RequestEditSession(m_clientId,
+                            m_pendingAction = ACT_UPDATE;
+                            pCtx->RequestEditSession(m_clientId,
                                     new CPinyinEditSession(this),
-                                    TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession))) {
-                                // ec comes from DoEditSession callback, not here
-                                updateComposition(pCtx, (TfEditCookie)0);
-                            }
+                                    TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession);
                             pCtx->Release();
                         }
                         pDocMgr->Release();
@@ -643,8 +635,9 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
         if (*pfEaten) return S_OK;
     }
 
-    // ── 中文标点符号: 半角 → 全角转换 (chinesePunctuation 开启, 未被翻页吃掉) ──
-    if (m_settings.chinesePunctuation) {
+    // ── 中文标点符号: 仅在中文模式下生效 ──
+    // m_chineseMode ⊂ chinesePunctuation: 两者同时为 true 才转换全角标点
+    if (m_chineseMode && m_settings.chinesePunctuation) {
         bool shiftDown2 = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const wchar_t* full = getFullWidthPunct(vk, shiftDown2);
         if (full) {
