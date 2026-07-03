@@ -20,6 +20,7 @@ public:
     std::string m_buffer;
     std::vector<std::pair<std::string,int>> m_candidates;
     int m_pageIndex = 0;
+    bool m_userDictDirty = false;
     PinyinSettings* m_pSettings = nullptr;
 
     void setSettings(PinyinSettings* p) { m_pSettings = p; }
@@ -64,6 +65,7 @@ public:
     }
 
     void saveUserDict() {
+        if (!m_userDictDirty) return;
         std::string dir = getModuleDirectory(g_hDllInst);
         std::ofstream fout(dir + "user.dict");
         if (!fout.is_open()) return;
@@ -73,6 +75,7 @@ public:
                 fout << kv.first << "\t" << p.first << "\t" << p.second << "\n";
             }
         }
+        m_userDictDirty = false;
     }
 
     void clear() {
@@ -283,7 +286,7 @@ public:
         vec.clear();
         for (auto& kv : dedup) vec.push_back({kv.first, kv.second});
         std::sort(vec.begin(), vec.end(), [](const auto& a, const auto& b){ return a.second > b.second; });
-        saveUserDict();
+        m_userDictDirty = true;  // 延迟存盘: Deactivate() 或析构时写入
         std::string result = selected.first;
         clear();
         return result;

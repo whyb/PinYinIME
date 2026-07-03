@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <gdiplus.h>
+#include <shellapi.h>
 #include <string>
 #include <vector>
 #include "../shared/pinyin_settings.h"
@@ -17,8 +18,27 @@
 #define WM_APP_REG_START_STEP    (WM_APP + 21)
 
 // ==================== 控件 ID ====================
-#define IDC_REG_CLOSE   998
-#define IDC_REG_ELEVATE 2001
+#define IDC_REG_CLOSE     998
+#define IDC_REG_ELEVATE   2001
+#define IDC_REG_SETTINGS  2002
+
+// Windows 11 检测 (build >= 22000)
+// 使用 RtlGetVersion 直接从内核获取版本号, 不依赖注册表
+inline bool IsWindows11OrLater() {
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) return false;
+
+    typedef LONG (WINAPI* FnRtlGetVersion)(OSVERSIONINFOW*);
+    auto pfn = (FnRtlGetVersion)GetProcAddress(hNtdll, "RtlGetVersion");
+    if (!pfn) return false;
+
+    OSVERSIONINFOW osvi = {};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    if (pfn(&osvi) == 0) {
+        return osvi.dwBuildNumber >= 22000;
+    }
+    return false;
+}
 
 // ==================== 步骤状态 ====================
 enum class RegStepState : int {
@@ -71,6 +91,12 @@ struct RegisterWindow {
     std::wstring m_dllPath;
     HWND m_hCloseBtn   = nullptr;
     HWND m_hElevateBtn = nullptr;
+
+    // 完成后的提示区域
+    bool m_showTips     = false;
+    RECT m_tipsRect     = {};
+    bool m_isWin11      = false;
+    HWND m_hSettingsBtn = nullptr;
 
     int S(int v) const { return (int)(v * m_dpiScale + 0.5f); }
 
@@ -215,6 +241,23 @@ struct RegisterWindow {
                 }
             }
 
+            // ── 完成提示文本 ──
+            if (self->m_showTips && !IsRectEmpty(&self->m_tipsRect)) {
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, self->m_textColor);
+                std::wstring tips = L"💡 注册成功后:\n"
+                    L"• 打开 设置 → 时间和语言 → 语言和区域 → 语言和区域\n"
+                    L"• 语言 → 简体中文(中国大陆) 右边 ... → 语言选项\n"
+                    L"• 键盘 → 增加键盘 → 在列表中找到 \"PinyinIME\" 并添加\n"
+                    L"• 使用 Win+Space 切换输入法\n"
+                    L"• 托盘图标由 PinyinIME.exe 提供 (已开机自启)\n";
+                if (self->m_isWin11) {
+                    tips += L"• 点击下方按钮可直接跳转到语言设置页面";
+                }
+                DrawTextW(hdc, tips.c_str(), -1, &self->m_tipsRect,
+                    DT_LEFT | DT_TOP | DT_WORDBREAK);
+            }
+
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -246,6 +289,7 @@ struct RegisterWindow {
             int id = LOWORD(wp);
             if (id == IDC_REG_CLOSE) { DestroyWindow(hwnd); return 0; }
             if (id == IDC_REG_ELEVATE) { self->handleElevate(); return 0; }
+            if (id == IDC_REG_SETTINGS) { self->handleOpenSettings(); return 0; }
             break;
         }
         case WM_TIMER: {
@@ -270,6 +314,7 @@ struct RegisterWindow {
                 CloseHandle(self->m_workerThread);
                 self->m_workerThread = nullptr;
             }
+            if (self->m_hSettingsBtn) { DestroyWindow(self->m_hSettingsBtn); self->m_hSettingsBtn = nullptr; }
             if (self->m_hFont) DeleteObject(self->m_hFont);
             if (self->m_hBgBrush) DeleteObject(self->m_hBgBrush);
             PostQuitMessage(0);
@@ -320,6 +365,8 @@ struct RegisterWindow {
             m_roundR = (std::max)(6, (std::min)(12, (int)(tm.tmHeight * 2 / 3)));
         }
 
+        m_isWin11 = IsWindows11OrLater();
+
         recalcLayout();
     }
 
@@ -335,6 +382,44 @@ struct RegisterWindow {
         }
 
         y += S(10);
+
+        // 完成后显示提示区域
+        if (m_showTips) {
+            // 使用 DT_CALCRECT 动态测算文本所需高度 (适配不同 DPI)
+            HDC hdc = GetDC(m_hDlg);
+            HFONT hOld = (HFONT)SelectObject(hdc, m_hFont);
+
+            std::wstring tips = L"💡 注册成功后:\n"
+                L"• 打开 设置 → 时间和语言 → 语言和区域 → 语言和区域\n"
+                L"• 语言 → 简体中文(中国大陆) 右边 ... → 语言选项\n"
+                L"• 键盘 → 增加键盘 → 在列表中找到 \"PinyinIME\" 并添加\n"
+                L"• 使用 Win+Space 切换输入法\n"
+                L"• 托盘图标由 PinyinIME.exe 提供 (已开机自启)\n";
+            if (m_isWin11) {
+                tips += L"• 点击下方按钮可直接跳转到语言设置页面";
+            }
+
+            RECT measureRect = { 0, 0, S(510) - S(15), 0 };
+            DrawTextW(hdc, tips.c_str(), -1, &measureRect,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+            int tipsH = measureRect.bottom - measureRect.top + S(4);
+
+            SelectObject(hdc, hOld);
+            ReleaseDC(m_hDlg, hdc);
+
+            m_tipsRect = { S(15), y, S(510), y + tipsH };
+            y += tipsH + S(8);
+
+            // Win11: 添加"打开设置"按钮
+            if (m_isWin11) {
+                if (m_hSettingsBtn) {
+                    int sbtnW = S(220), sbtnH = S(28);
+                    SetWindowPos(m_hSettingsBtn, nullptr,
+                        (S(530) - sbtnW) / 2, y, sbtnW, sbtnH, SWP_NOZORDER);
+                }
+                y += S(36);
+            }
+        }
 
         int btnW = S(80), btnH = S(28);
         SetWindowPos(m_hCloseBtn, nullptr, (S(530) - btnW) / 2, y, btnW, btnH, SWP_NOZORDER);
@@ -387,6 +472,12 @@ struct RegisterWindow {
     void startNextStep() {
         int next = m_currentStepIdx + 1;
         if (next >= (int)RegStepType::Count) {
+            // 全部完成, 显示提示
+            m_showTips = true;
+            if (m_isWin11) {
+                createSettingsButton();
+            }
+            recalcLayout();
             InvalidateRect(m_hDlg, nullptr, TRUE);
             return;
         }
@@ -450,6 +541,23 @@ struct RegisterWindow {
             InvalidateRect(m_hDlg, nullptr, TRUE);
             enableCloseButton(true);
         }
+    }
+
+    void createSettingsButton() {
+        if (m_hSettingsBtn) return;  // 已创建
+        HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(m_hDlg, GWLP_HINSTANCE);
+        m_hSettingsBtn = CreateWindowExW(0, L"BUTTON", L"📂 打开设置 → 语言和区域",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, S(220), S(28),
+            m_hDlg, (HMENU)(UINT_PTR)IDC_REG_SETTINGS, hInst, nullptr);
+        if (m_hFont) SendMessageW(m_hSettingsBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+    }
+
+    void handleOpenSettings() {
+        // 打开 Windows 11 设置 → 时间和语言 → 语言和区域
+        ShellExecuteW(m_hDlg, L"open",
+            L"ms-settings:regionlanguage",
+            nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     // ==================== 工作线程 ====================

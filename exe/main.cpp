@@ -22,17 +22,37 @@ static HINSTANCE g_hInst = nullptr;
 static HWND g_hWnd = nullptr;
 static NOTIFYICONDATAW g_trayIcon = {};
 static UINT g_uMsgOpenSettings = 0;  // registered message for cross-process settings open
+static UINT g_uTaskbarCreated = 0;   // explorer 重启后重建托盘图标
 PinyinSettings g_settings;
 
 // ==================== 自定义消息 ====================
 #define WM_TRAYICON      (WM_USER + 2)
 #define WM_OPEN_SETTINGS (WM_USER + 3)
+#define WM_TRAY_RESTORE  (WM_USER + 4)  // 定时重试恢复托盘图标
+
+// 创建/恢复托盘图标
+static void ensureTrayIcon() {
+    if (!g_trayIcon.hWnd) return;
+    // 先尝试删除旧的 (忽略失败)
+    Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
+    // 重新添加
+    BOOL ok = Shell_NotifyIconW(NIM_ADD, &g_trayIcon);
+    if (!ok) {
+        // 首次添加失败, 1 秒后重试
+        SetTimer(g_hWnd, 2, 1000, nullptr);
+    }
+}
 
 // ==================== 主窗口过程 ====================
 static LRESULT CALLBACK mainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // 跨进程打开设置 (来自 DLL 齿轮按钮 或 --open-settings 转发)
     if (g_uMsgOpenSettings && msg == g_uMsgOpenSettings) {
         SettingsWindow::show(g_hInst, hwnd);
+        return 0;
+    }
+    // explorer 重启后重建托盘图标
+    if (g_uTaskbarCreated && msg == g_uTaskbarCreated) {
+        ensureTrayIcon();
         return 0;
     }
     switch (msg) {
@@ -56,6 +76,13 @@ static LRESULT CALLBACK mainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_OPEN_SETTINGS:
         SettingsWindow::show(g_hInst, hwnd);
         return 0;
+    case WM_TIMER:
+        if (wp == 2) {  // 托盘图标重试
+            if (Shell_NotifyIconW(NIM_ADD, &g_trayIcon)) {
+                KillTimer(hwnd, 2);
+            }
+        }
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -72,13 +99,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
         LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
         if (argv) {
             for (int i = 0; i < argc; i++) {
-                if (wcscmp(argv[i], L"--register-system") == 0) {
-                    bool ok = doFullRegistration();
-                    LocalFree(argv);
-                    return ok ? 0 : 1;
-                }
-                if (wcscmp(argv[i], L"--register-with-ui") == 0) {
-                    // UAC 提权后的注册进度窗口
+                if (wcscmp(argv[i], L"--register-system") == 0 ||
+                    wcscmp(argv[i], L"--register-with-ui") == 0) {
+                    // 注册进度窗口 (--register-system 和 --register-with-ui 都使用)
                     LocalFree(argv);
                     SetProcessDPIAware();
                     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -96,13 +119,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
                     CoUninitialize();
                     return 0;
                 }
-                if (wcscmp(argv[i], L"--unregister-system") == 0) {
-                    bool ok = doFullUnregistration();
-                    LocalFree(argv);
-                    return ok ? 0 : 1;
-                }
-                if (wcscmp(argv[i], L"--uninstall-with-ui") == 0) {
-                    // UAC 提权后的卸载进度窗口
+                if (wcscmp(argv[i], L"--unregister-system") == 0 ||
+                    wcscmp(argv[i], L"--uninstall-with-ui") == 0) {
+                    // 卸载进度窗口 (--unregister-system 和 --uninstall-with-ui 都使用)
                     LocalFree(argv);
                     SetProcessDPIAware();
                     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -165,6 +184,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
 
     // 注册跨进程消息
     g_uMsgOpenSettings = RegisterWindowMessageW(PinyinIME_MSG_OPEN_SETTINGS);
+    g_uTaskbarCreated  = RegisterWindowMessageW(L"TaskbarCreated");
 
     // 创建消息窗口 (改为 WS_POPUP 而非 HWND_MESSAGE, 以便 FindWindowW 跨进程查找)
     WNDCLASSEXW wc = {};
@@ -187,7 +207,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
     g_trayIcon.uCallbackMessage = WM_TRAYICON;
     g_trayIcon.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wcscpy_s(g_trayIcon.szTip, L"PinyinIME 拼音输入法");
-    Shell_NotifyIconW(NIM_ADD, &g_trayIcon);
+    ensureTrayIcon();
 
     // 启动默认打开设置窗口
     PostMessageW(g_hWnd, g_uMsgOpenSettings, 0, 0);

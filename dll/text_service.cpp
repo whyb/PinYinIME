@@ -930,6 +930,9 @@ void CPinyinTextService::updateComposition(ITfContext* pContext, TfEditCookie ec
 void CPinyinTextService::commitComposition(const std::wstring& text) {
     m_pendingCommit = text;
     m_pendingAction = ACT_COMMIT;
+    // 清除 TSF 光标位置缓存
+    m_candidateWin.m_hasTsfCaretPos = false;
+    m_candidateWin.m_hasPreCompCaretPos = false;
 
     ITfDocumentMgr* pDocMgr = nullptr;
     if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr)) && pDocMgr) {
@@ -938,7 +941,7 @@ void CPinyinTextService::commitComposition(const std::wstring& text) {
             HRESULT hrSession = S_OK;
             pContext->RequestEditSession(m_clientId,
                 new CPinyinEditSession(this),
-                TF_ES_SYNC | TF_ES_READWRITE, &hrSession);
+                TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession);
             pContext->Release();
         }
         pDocMgr->Release();
@@ -952,17 +955,17 @@ void CPinyinTextService::cancelComposition() {
     m_candidateWin.m_hasTsfCaretPos = false;
     m_candidateWin.m_hasPreCompCaretPos = false;
 
-    ITfDocumentMgr* pDocMgr = nullptr;
-    if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr)) && pDocMgr) {
-        ITfContext* pContext = nullptr;
-        if (SUCCEEDED(pDocMgr->GetTop(&pContext)) && pContext) {
-            HRESULT hrSession = S_OK;
-            pContext->RequestEditSession(m_clientId,
+    ITfDocumentMgr* pDocMgr2 = nullptr;
+    if (SUCCEEDED(m_pThreadMgr->GetFocus(&pDocMgr2)) && pDocMgr2) {
+        ITfContext* pContext2 = nullptr;
+        if (SUCCEEDED(pDocMgr2->GetTop(&pContext2)) && pContext2) {
+            HRESULT hrSession2 = S_OK;
+            pContext2->RequestEditSession(m_clientId,
                 new CPinyinEditSession(this),
-                TF_ES_SYNC | TF_ES_READWRITE, &hrSession);
-            pContext->Release();
+                TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession2);
+            pContext2->Release();
         }
-        pDocMgr->Release();
+        pDocMgr2->Release();
     }
 }
 

@@ -95,6 +95,10 @@ struct UninstallWindow {
     HWND m_hCloseBtn   = nullptr;
     HWND m_hElevateBtn = nullptr;
 
+    // 完成后的提示区域
+    bool m_showTips = false;
+    RECT m_tipsRect = {};
+
     // DPI 缩放
     int S(int v) const { return (int)(v * m_dpiScale + 0.5f); }
 
@@ -267,6 +271,19 @@ struct UninstallWindow {
                 }
             }
 
+            // ── 完成提示文本 ──
+            if (self->m_showTips && !IsRectEmpty(&self->m_tipsRect)) {
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, self->m_textColor);
+                std::wstring tips = L"💡 提示:\n"
+                    L"• 卸载后 \"PinyinIME\" 将从系统键盘列表中移除\n"
+                    L"• 如 DLL 仍被占用, 请关闭所有使用该输入法的程序\n"
+                    L"• 或注销/重启 Windows 后即可替换 DLL 文件\n"
+                    L"• 托盘图标 (PinyinIME.exe) 不受影响";
+                DrawTextW(hdc, tips.c_str(), -1, &self->m_tipsRect,
+                    DT_LEFT | DT_TOP | DT_WORDBREAK);
+            }
+
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -421,6 +438,30 @@ struct UninstallWindow {
 
         y += S(10);
 
+        // 完成后显示提示区域
+        if (m_showTips) {
+            // 使用 DT_CALCRECT 动态测算文本所需高度 (适配不同 DPI)
+            HDC hdc = GetDC(m_hDlg);
+            HFONT hOld = (HFONT)SelectObject(hdc, m_hFont);
+
+            std::wstring tips = L"💡 提示:\n"
+                L"• 卸载后 \"PinyinIME\" 将从系统键盘列表中移除\n"
+                L"• 如 DLL 仍被占用, 请关闭所有使用该输入法的程序\n"
+                L"• 或注销/重启 Windows 后即可替换 DLL 文件\n"
+                L"• 托盘图标 (PinyinIME.exe) 不受影响";
+
+            RECT measureRect = { 0, 0, S(510) - S(15), 0 };
+            DrawTextW(hdc, tips.c_str(), -1, &measureRect,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+            int tipsH = measureRect.bottom - measureRect.top + S(4);
+
+            SelectObject(hdc, hOld);
+            ReleaseDC(m_hDlg, hdc);
+
+            m_tipsRect = { S(15), y, S(510), y + tipsH };
+            y += tipsH + S(8);
+        }
+
         // 关闭按钮 (居中)
         int btnW = S(80), btnH = S(28);
         SetWindowPos(m_hCloseBtn, nullptr, (S(530) - btnW) / 2, y, btnW, btnH, SWP_NOZORDER);
@@ -510,7 +551,9 @@ struct UninstallWindow {
     void startNextStep() {
         int next = m_currentStepIdx + 1;
         if (next >= (int)StepType::Count) {
-            // 全部完成
+            // 全部完成, 显示提示
+            m_showTips = true;
+            recalcLayout();
             InvalidateRect(m_hDlg, nullptr, TRUE);
             return;
         }
