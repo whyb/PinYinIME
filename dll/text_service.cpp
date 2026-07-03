@@ -132,7 +132,7 @@ STDMETHODIMP CPinyinTextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, 
     m_candidateWin.create(g_hDllInst);
     OutputDebugStringA("[PinyinIME] Candidate window created\n");
 
-    // ── 1. 注册 KeyEventSink (通过 ITfKeystrokeMgr 替代键盘钩子) ──
+    // ── 1. 注册 KeyEventSink ──
     ITfKeystrokeMgr* pKeystrokeMgr = nullptr;
     if (SUCCEEDED(m_pThreadMgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&pKeystrokeMgr))) {
         pKeystrokeMgr->AdviseKeyEventSink(m_clientId,
@@ -1028,10 +1028,14 @@ STDMETHODIMP CPinyinEditSession::DoEditSession(TfEditCookie ec) {
     if (svc->m_pendingAction == CPinyinTextService::ACT_START) {
         if (pContext) {
             svc->startComposition(pContext, ec);
+            // startComposition 捕获了准确的 TSF 光标位置, 重新定位候选窗口
+            svc->showCandidateWindow();
         }
     } else if (svc->m_pendingAction == CPinyinTextService::ACT_UPDATE) {
         if (pContext) {
             svc->updateComposition(pContext, ec);
+            // updateComposition 刷新了 TSF 光标位置缓存, 重新定位候选窗口
+            svc->showCandidateWindow();
         }
     }
 

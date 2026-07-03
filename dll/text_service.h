@@ -1,5 +1,5 @@
 // dll/text_service.h — CPinyinTextService 声明
-// 实现 TSF 文本服务接口, 替代键盘钩子架构
+// 实现 TSF 文本服务接口
 #pragma once
 
 #ifndef NOMINMAX

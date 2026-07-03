@@ -317,7 +317,6 @@ struct RegisterWindow {
             if (self->m_hSettingsBtn) { DestroyWindow(self->m_hSettingsBtn); self->m_hSettingsBtn = nullptr; }
             if (self->m_hFont) DeleteObject(self->m_hFont);
             if (self->m_hBgBrush) DeleteObject(self->m_hBgBrush);
-            PostQuitMessage(0);
             return 0;
         }
         case WM_NCDESTROY: {
@@ -725,8 +724,7 @@ struct RegisterWindow {
         }
 
         MSG msg;
-        while (GetMessageW(&msg, nullptr, 0, 0)) {
-            if (!IsWindow(hDlg)) break;
+        while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
