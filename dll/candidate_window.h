@@ -28,6 +28,7 @@ public:
     int m_rowH = 24;
     HRGN m_roundRgn = nullptr;
     int m_roundR = 10;
+    float m_dpiScale = 1.0f;
     PinyinSettings* m_pSettings = nullptr;
     // TSF 标准: 在 edit session 内通过 ITfContextView::GetTextExt 拿到准确坐标,
     // 缓存后供 getCaretPosition 优先使用 (解决 Firefox 等不使用 Win32 caret 的应用)
@@ -45,8 +46,14 @@ public:
     COLORREF getInputColor()  { return m_pSettings ? m_pSettings->inputColor  : RGB(0x32,0x64,0x32); }
 
     void create(HINSTANCE hInst) {
+        // 获取主显示器 DPI 缩放比例
+        HDC hdcScreen = GetDC(nullptr);
+        int dpi = GetDeviceCaps(hdcScreen, LOGPIXELSY);
+        ReleaseDC(nullptr, hdcScreen);
+        m_dpiScale = dpi / 96.0f;
+
         int fontSize = m_pSettings ? m_pSettings->fontSize : 20;
-        m_font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        m_font = CreateFontW(-(int)(fontSize * m_dpiScale + 0.5f), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
             m_pSettings ? m_pSettings->fontName.c_str() : L"Microsoft YaHei");
@@ -230,21 +237,64 @@ public:
         if (!m_hwnd) return;
         m_selectedIndex = 0;  // 新候选列表默认选中第一个
         POINT pt = getCaretPosition();
+
+        // ── 根据目标显示器更新 DPI 缩放比例 ──
+        {
+            HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            UINT dpiY = 96;
+            HMODULE hShcore = LoadLibraryW(L"shcore.dll");
+            if (hShcore) {
+                auto pfn = (HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*))
+                    GetProcAddress(hShcore, "GetDpiForMonitor");
+                if (pfn) { UINT dpiX; pfn(hMon, 0, &dpiX, &dpiY); }
+                FreeLibrary(hShcore);
+            } else {
+                HDC hdcScreen = GetDC(nullptr);
+                dpiY = GetDeviceCaps(hdcScreen, LOGPIXELSY);
+                ReleaseDC(nullptr, hdcScreen);
+            }
+            m_dpiScale = dpiY / 96.0f;
+        }
+        auto S = [this](int v) -> int { return (int)(v * m_dpiScale + 0.5f); };
+
         HDC hdc = GetDC(m_hwnd);
         SelectObject(hdc, m_font);
         TEXTMETRICW tm; GetTextMetrics(hdc, &tm);
 
-        int width = 12; SIZE sz;
-        for (int i = 0; i < (int)candidates.size(); i++) {
-            std::wstring wtext = utf8ToWide(std::to_string(i + 1) + "." + candidates[i].first + " ");
-            GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz); width += sz.cx;
-        }
+        bool vert = m_pSettings ? m_pSettings->verticalLayout : false;
         bool showGear = m_pSettings ? m_pSettings->showSettingsGear : true;
-        SIZE tmpSz;
-        if (showGear) {
-            GetTextExtentPoint32W(hdc, L"⚙", 1, &tmpSz);
-            width += tmpSz.cx + 12;  // gear width + padding
-            width += 12;  // end padding
+        int leftPad = S(8), rightPad = S(12), candSpacing = S(8);
+
+        int width; SIZE sz;
+        if (vert && !candidates.empty()) {
+            // 竖排: 宽度取最宽候选词 + 内边距
+            width = leftPad + rightPad;
+            for (int i = 0; i < (int)candidates.size(); i++) {
+                std::wstring wtext = utf8ToWide(std::to_string(i + 1) + "." + candidates[i].first);
+                GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz);
+                int candW = leftPad + sz.cx + rightPad;
+                if (candW > width) width = candW;
+            }
+            if (showGear) {
+                SIZE gearSz;
+                GetTextExtentPoint32W(hdc, L"⚙", 1, &gearSz);
+                int gearW = leftPad + gearSz.cx + rightPad;
+                if (gearW > width) width = gearW;
+            }
+        } else {
+            // 横排: 所有候选词宽度之和 + 间距 (与 WM_PAINT 的 x+=totalW+8 保持一致)
+            width = leftPad;
+            for (int i = 0; i < (int)candidates.size(); i++) {
+                std::wstring wtext = utf8ToWide(std::to_string(i + 1) + "." + candidates[i].first);
+                GetTextExtentPoint32W(hdc, wtext.c_str(), (int)wtext.size(), &sz);
+                width += sz.cx + candSpacing;
+            }
+            if (showGear) {
+                SIZE gearSz;
+                GetTextExtentPoint32W(hdc, L"⚙", 1, &gearSz);
+                width += gearSz.cx;
+            }
+            width += rightPad;
         }
         ReleaseDC(m_hwnd, hdc);
 
@@ -252,15 +302,13 @@ public:
         int maxWidth = (screen.right - screen.left) * 85 / 100;
         if (width > maxWidth) width = maxWidth;
 
-        int borderW = 3;
+        int borderW = S(3);
         m_roundR = (std::max)(6, (std::min)(16, (int)(tm.tmHeight * 2 / 3)));
-        bool vert = m_pSettings ? m_pSettings->verticalLayout : false;
         int height;
         if (vert && !candidates.empty()) {
-            if (250 > maxWidth) width = maxWidth;
-            m_rowH = tm.tmHeight + 6;
-            m_textY = borderW + 4;
-            height = m_textY + ((int)candidates.size() + 1) * m_rowH + borderW + 6;
+            m_rowH = tm.tmHeight + S(6);
+            m_textY = borderW + S(4);
+            height = m_textY + ((int)candidates.size() + 1) * m_rowH + borderW + S(6);
         } else {
             int pad = (std::max)(4, (int)(tm.tmHeight / 8));
             m_textY = borderW + pad;
@@ -345,7 +393,8 @@ public:
 
                 SelectObject(hdc, self->m_font);
                 SetBkMode(hdc, TRANSPARENT);
-                int x=8, y=self->m_textY;
+                auto S = [self](int v) -> int { return (int)(v * self->m_dpiScale + 0.5f); };
+                int x = S(8), y = self->m_textY;
                 auto candidates = g_pSharedEngine->getPageCandidates();
                 int candBaseY=y; SIZE sz;
                 bool vert = self->m_pSettings ? self->m_pSettings->verticalLayout : false;
@@ -360,8 +409,8 @@ public:
                     int totalW=szIdx.cx+szTxt.cx;
                     // 选中项: 反色圆角矩形背景
                     if(selected){
-                        int selPadX=4, selPadY=1;
-                        RECT selRc={x-selPadX, cy-selPadY, x+totalW+selPadX, cy+self->m_rowH+selPadY-2};
+                        int selPadX = S(4), selPadY = S(1);
+                        RECT selRc = {x - selPadX, cy - selPadY, x + totalW + selPadX, cy + self->m_rowH + selPadY - S(2)};
                         int selR=(self->m_pSettings && !self->m_pSettings->roundedCorner)?0:(std::max)(2,(std::min)(4,self->m_roundR/3));
                         Gdiplus::Graphics g(hdc);
                         g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
@@ -392,18 +441,18 @@ public:
                         SetTextColor(hdc,self->getTextColor());
                         TextOutW(hdc,x+szIdx.cx,cy,wtext.c_str(),(int)wtext.size());
                     }
-                    if(!vert) x+=totalW+8;
+                    if(!vert) x += totalW + S(8);
                 }
                 // ── 齿轮按钮 ──
                 bool showGear = self->m_pSettings ? self->m_pSettings->showSettingsGear : true;
                 if (showGear) {
                     int pageY=y,pageX=x;
-                    if(vert){pageY=candBaseY+(int)candidates.size()*self->m_rowH+2;pageX=8;}
+                    if(vert){pageY = candBaseY + (int)candidates.size() * self->m_rowH + S(2); pageX = S(8);}
                     SetTextColor(hdc,RGB(80,80,200)); std::wstring wgear=L"⚙";
                     SIZE gearSz; GetTextExtentPoint32W(hdc,wgear.c_str(),1,&gearSz);
                     int gearCY=pageY+(self->m_rowH-gearSz.cy)/2;
                     TextOutW(hdc,pageX,gearCY,wgear.c_str(),1);
-                    self->m_settingsBtnRect={pageX,gearCY,pageX+gearSz.cx+4,gearCY+gearSz.cy};
+                    self->m_settingsBtnRect = {pageX, gearCY, pageX + gearSz.cx + S(4), gearCY + gearSz.cy};
                 } else {
                     self->m_settingsBtnRect={};
                 }
