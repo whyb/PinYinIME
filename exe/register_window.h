@@ -12,6 +12,7 @@
 #include <vector>
 #include "../shared/pinyin_settings.h"
 #include "registration.h"
+#include "service_manager.h"
 
 // ==================== 自定义消息 ====================
 #define WM_APP_REG_STEP_COMPLETE (WM_APP + 20)
@@ -47,11 +48,11 @@ enum class RegStepState : int {
 
 // ==================== 步骤类型 ====================
 enum class RegStepType : int {
-    CheckAdmin   = 0,
-    ComRegister  = 1,
-    TsfRegister  = 2,
-    StartupReg   = 3,
-    Count        = 4,
+    CheckAdmin       = 0,
+    ComRegister      = 1,
+    TsfRegister      = 2,
+    InstallDictSvc   = 3,  // 安装并启动后台词库服务
+    Count            = 4,
 };
 
 // ==================== 每个步骤的信息 ====================
@@ -250,7 +251,9 @@ struct RegisterWindow {
                     L"• 语言 → 简体中文(中国大陆) 右边 ... → 语言选项\n"
                     L"• 键盘 → 增加键盘 → 在列表中找到 \"PinyinIME\" 并添加\n"
                     L"• 使用 Win+Space 切换输入法\n"
-                    L"• 托盘图标由 PinyinIME.exe 提供 (已开机自启)\n";
+                    L"• 后台词库服务 (PinyinIMEDictService.exe) \n"
+                    L"• 词库编译/加载/共享内存 均由 Service 进程独立完成\n"
+                    L"• PinyinIME.exe 仅负责 设置 + 注册, 不参与词库操作\n";
                 if (self->m_isWin11) {
                     tips += L"• 点击下方按钮可直接跳转到语言设置页面";
                 }
@@ -344,10 +347,10 @@ struct RegisterWindow {
         m_dllPath += L"PinyinIMETSF.dll";
 
         m_steps.resize((int)RegStepType::Count);
-        m_steps[(int)RegStepType::CheckAdmin].label  = L"管理员权限检查";
-        m_steps[(int)RegStepType::ComRegister].label  = L"COM 组件注册";
-        m_steps[(int)RegStepType::TsfRegister].label  = L"TSF 框架注册";
-        m_steps[(int)RegStepType::StartupReg].label   = L"开机自启动注册";
+        m_steps[(int)RegStepType::CheckAdmin].label     = L"管理员权限检查";
+        m_steps[(int)RegStepType::ComRegister].label     = L"COM 组件注册";
+        m_steps[(int)RegStepType::TsfRegister].label     = L"TSF 框架注册";
+        m_steps[(int)RegStepType::InstallDictSvc].label  = L"安装后台词库服务";
 
         m_hCloseBtn = CreateWindowExW(0, L"BUTTON", L"关闭",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -393,7 +396,9 @@ struct RegisterWindow {
                 L"• 语言 → 简体中文(中国大陆) 右边 ... → 语言选项\n"
                 L"• 键盘 → 增加键盘 → 在列表中找到 \"PinyinIME\" 并添加\n"
                 L"• 使用 Win+Space 切换输入法\n"
-                L"• 托盘图标由 PinyinIME.exe 提供 (已开机自启)\n";
+                L"• 后台词库服务 (PinyinIMEDictService.exe) \n"
+                L"• 词库编译/加载/共享内存 均由 Service 进程独立完成\n"
+                L"• PinyinIME.exe 仅负责 设置 + 注册, 不参与词库操作\n";
             if (m_isWin11) {
                 tips += L"• 点击下方按钮可直接跳转到语言设置页面";
             }
@@ -576,8 +581,8 @@ struct RegisterWindow {
         case RegStepType::TsfRegister:
             result = executeTsfRegister(self->m_dllPath);
             break;
-        case RegStepType::StartupReg:
-            result = executeStartupRegister();
+        case RegStepType::InstallDictSvc:
+            result = executeInstallDictService();
             break;
         default:
             break;
@@ -643,33 +648,135 @@ struct RegisterWindow {
         return r;
     }
 
-    // ==================== 步骤 3: 开机自启动注册 ====================
-    static RegStepResult executeStartupRegister() {
+    // ==================== 步骤 3: 安装后台词库服务 (强制覆盖重装) ──────────────
+    //
+    // 负责: dict.bin 编译 + Task Scheduler 注册 + 启动服务进程 + 等待就绪。
+    // dict.bin 编译在此步完成 (而非 build-time),
+    // 编译完成后启动服务, 服务直接加载已编译好的 dict.bin。
+    //
+    static RegStepResult executeInstallDictService() {
         RegStepResult r;
+
+        // 获取 EXE 所在目录
         wchar_t exePath[MAX_PATH];
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring exeDir(exePath);
+        size_t pos = exeDir.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) exeDir = exeDir.substr(0, pos + 1);
 
-        HKEY hKey = nullptr;
-        LONG res = RegCreateKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr);
-        if (res == ERROR_SUCCESS) {
-            DWORD len = (DWORD)((wcslen(exePath) + 1) * sizeof(wchar_t));
-            res = RegSetValueExW(hKey, L"PinyinIME", 0, REG_SZ, (const BYTE*)exePath, len);
-            RegCloseKey(hKey);
-            if (res == ERROR_SUCCESS) {
-                r.detail = L"开机自启动 已注册";
-                r.success = true;
-            } else {
-                wchar_t buf[16]; swprintf(buf, 16, L"%08X", res);
-                r.detail = L"开机自启动 注册失败 (0x" + std::wstring(buf) + L")";
-                r.success = false;
-            }
-        } else {
-            wchar_t buf[16]; swprintf(buf, 16, L"%08X", res);
-            r.detail = L"开机自启动 无法打开注册表项 (0x" + std::wstring(buf) + L")";
+        std::wstring detail;
+
+        // 3a. 检查服务 exe 是否存在
+        std::wstring servicePath = exeDir + PinyinIME_DICT_SERVICE_EXE;
+        if (GetFileAttributesW(servicePath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            r.detail = L"词库服务 未找到 PinyinIMEDictService.exe (请确保已正确部署)";
             r.success = false;
+            return r;
         }
+
+        // 3b. 如果旧服务还在运行, 先停止
+        if (ServiceManager::isServiceRunning()) {
+            detail += L"检测到旧服务, 正在停止... ";
+            bool stopped = ServiceManager::stopService(3000);
+            if (stopped) {
+                detail += L"已停止; ";
+                Sleep(500);
+            } else {
+                detail += L"未能完全停止; ";
+            }
+        }
+
+        // 3c. 编译 dict.bin (如不存在)
+        std::wstring dictBinPath = exeDir + L"dict.bin";
+        if (GetFileAttributesW(dictBinPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            std::wstring compilerPath = exeDir + L"dict_compiler.exe";
+            std::wstring cnDictsPath  = exeDir + L"cn_dicts";
+
+            if (GetFileAttributesW(compilerPath.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                GetFileAttributesW(cnDictsPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+
+                detail += L"正在编译词库 (dict.bin)... ";
+
+                std::wstring cmdLine = L"\"" + compilerPath + L"\" \""
+                                     + cnDictsPath + L"\" \""
+                                     + dictBinPath + L"\"";
+
+                STARTUPINFOW si = {};
+                si.cb = sizeof(si);
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_HIDE;
+
+                PROCESS_INFORMATION pi = {};
+                std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
+                cmdBuf.push_back(L'\0');
+
+                if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr,
+                                   FALSE, CREATE_NO_WINDOW, nullptr,
+                                   exeDir.c_str(), &si, &pi)) {
+                    CloseHandle(pi.hThread);
+                    // 编译大词库可能需要 1-2 分钟
+                    DWORD waitResult = WaitForSingleObject(pi.hProcess, 180000);
+                    CloseHandle(pi.hProcess);
+
+                    if (waitResult == WAIT_OBJECT_0) {
+                        if (GetFileAttributesW(dictBinPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                            detail += L"编译完成; ";
+                        } else {
+                            detail += L"编译失败 (dict.bin 未生成); ";
+                            r.detail = detail;
+                            r.success = false;
+                            return r;
+                        }
+                    } else {
+                        detail += L"编译超时; ";
+                        r.detail = detail;
+                        r.success = false;
+                        return r;
+                    }
+                } else {
+                    detail += L"无法启动 dict_compiler.exe; ";
+                    r.detail = detail;
+                    r.success = false;
+                    return r;
+                }
+            } else {
+                detail += L"未找到 dict_compiler.exe 或 cn_dicts 目录, 无法编译词库; ";
+                r.detail = detail;
+                r.success = false;
+                return r;
+            }
+        }
+
+        // 3d. 注册 Task Scheduler 开机自启
+        bool taskOk = ServiceManager::installAutoStart(exeDir);
+        if (taskOk) {
+            detail += L"Task Scheduler 已注册; ";
+        } else {
+            detail += L"Task Scheduler 注册失败 (服务可能不会自启); ";
+        }
+
+        // 3e. 启动服务 (dict.bin 已存在, 服务直接加载)
+        HANDLE hSvc = ServiceManager::startService(exeDir);
+        if (!hSvc) {
+            detail += L"服务 启动失败";
+            r.detail = detail;
+            r.success = false;
+            return r;
+        }
+        CloseHandle(hSvc);
+        detail += L"服务 已启动; ";
+
+        // 3f. 等待服务就绪 (dict.bin 已编译好, 只需加载, 较快)
+        bool ready = ServiceManager::waitForServiceReady(30000);
+        if (ready) {
+            detail += L"服务 已就绪 ✓";
+            r.success = true;
+        } else {
+            detail += L"服务 启动超时 (可能仍在加载词库, 稍后自动就绪)";
+            r.success = true;  // 进程已启动, 不算失败
+        }
+
+        r.detail = detail;
         return r;
     }
 

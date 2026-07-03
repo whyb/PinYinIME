@@ -7,7 +7,7 @@
 #include <unordered_set>
 #include <fstream>
 #include <algorithm>
-#include "dictionary.h"
+#include "dict_client.h"
 #include "../shared/pinyin_settings.h"
 #include "../shared/utf_utils.h"
 
@@ -15,7 +15,7 @@ extern HINSTANCE g_hDllInst;
 
 class PinyinEngine {
 public:
-    PinyinDict m_dict;
+    DictClient m_dict;
     std::unordered_map<std::string, std::vector<std::pair<std::string,int>>> m_userDict;
     std::string m_buffer;
     std::vector<std::pair<std::string,int>> m_candidates;
@@ -97,10 +97,10 @@ public:
     }
 
     std::vector<std::pair<std::string,int>> getTopCandidates(const std::string& syl, int n) {
-        m_dict.trySwapBackground();  // 检查后台词库是否加载完成
+        m_dict.trySwapBackground();  // no-op in IPC mode (service always has full dict)
         std::vector<std::pair<std::string,int>> result;
-        auto* entries = m_dict.find(syl);
-        if (entries) for (auto& p : *entries) result.push_back({p.word, p.freq});
+        auto entries = m_dict.find(syl);
+        for (auto& p : entries) result.push_back({p.word, p.freq});
         auto uit = m_userDict.find(syl);
         if (uit != m_userDict.end()) for (auto& p : uit->second) result.push_back(p);
         std::unordered_map<std::string, int> dedup;
@@ -173,22 +173,24 @@ public:
                     dp[i + len].push_back(ns);
                 }
             }
-            if (dp[i].size() > 8) {
+            if (dp[i].size() > 20) {
                 std::sort(dp[i].begin(), dp[i].end(), [](const Segmentation& a, const Segmentation& b) {
-                    if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
+                    // Primary: total frequency (prefer commonly-used syllables overall)
                     if (a.totalFreq != b.totalFreq) return a.totalFreq > b.totalFreq;
+                    // Secondary: worst syllable frequency (break ties)
+                    if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
                     return a.count < b.count;
                 });
-                dp[i].resize(8);
+                dp[i].resize(20);
             }
         }
         auto& full = dp[n];
         std::sort(full.begin(), full.end(), [](const Segmentation& a, const Segmentation& b) {
-            if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
             if (a.totalFreq != b.totalFreq) return a.totalFreq > b.totalFreq;
+            if (a.minFreq != b.minFreq) return a.minFreq > b.minFreq;
             return a.count < b.count;
         });
-        if (full.size() > 12) full.resize(12);
+        if (full.size() > 24) full.resize(24);
         return full;
     }
 
@@ -203,21 +205,62 @@ public:
                 if (cands.empty()) cands.push_back({syl, 1});
                 perSyl.push_back(cands);
             }
-            {   // 每个音节取 top-1
+            {   // Top-1 for each syllable
                 std::string combined; int sumFreq = 0;
                 for (size_t k = 0; k < perSyl.size(); k++) { combined += perSyl[k][0].first; sumFreq += perSyl[k][0].second; }
-                if (seen.insert(combined).second) result.push_back({combined, sumFreq / (int)perSyl.size()});
+                // Use totalFreq directly — don't divide by count (penalizes longer correct results)
+                if (seen.insert(combined).second) result.push_back({combined, sumFreq});
             }
-            for (size_t v = 0; v < perSyl.size() && result.size() < 40; v++) {
+            for (size_t v = 0; v < perSyl.size() && result.size() < 60; v++) {
                 for (int ci = 1; ci < (int)perSyl[v].size() && ci <= 3; ci++) {
                     std::string combined; int sumFreq = 0;
                     for (size_t k = 0; k < perSyl.size(); k++) { int pick = (k == v) ? ci : 0; combined += perSyl[k][pick].first; sumFreq += perSyl[k][pick].second; }
-                    if (seen.insert(combined).second) result.push_back({combined, sumFreq / (int)perSyl.size()});
+                    if (seen.insert(combined).second) result.push_back({combined, sumFreq});
+                }
+            }
+            // Two-syllable variants: try alternative for TWO syllables at once
+            // characters need non-top-1 candidates to form the desired word.
+            for (size_t v1 = 0; v1 < perSyl.size(); v1++) {
+                for (size_t v2 = v1 + 1; v2 < perSyl.size(); v2++) {
+                    for (int c1 = 1; c1 < (int)perSyl[v1].size() && c1 <= 3; c1++) {
+                        for (int c2 = 1; c2 < (int)perSyl[v2].size() && c2 <= 3; c2++) {
+                            std::string combined; int sumFreq = 0;
+                            for (size_t k = 0; k < perSyl.size(); k++) {
+                                int pick = 0;
+                                if (k == v1) pick = c1;
+                                else if (k == v2) pick = c2;
+                                combined += perSyl[k][pick].first;
+                                sumFreq += perSyl[k][pick].second;
+                            }
+                            if (seen.insert(combined).second) result.push_back({combined, sumFreq});
+                        }
+                    }
+                }
+            }
+            // Boost: if first 2-3 syllables' concatenated pinyin matches
+            // a known dict entry, boost ONLY combinations starting with
+            if (seg.sylls.size() >= 2) {
+                std::string pyPrefix;
+                for (size_t si = 0; si < seg.sylls.size() && si < 3; ++si) {
+                    pyPrefix += seg.sylls[si];
+                    if (si >= 1) {
+                        auto de = m_dict.find(pyPrefix);
+                        if (!de.empty() && !de[0].word.empty()) {
+                            const std::string& dictWord = de[0].word;
+                            int boost = de[0].freq;
+                            for (auto& c : result) {
+                                if (c.first.compare(0, dictWord.size(), dictWord) == 0) {
+                                    c.second += boost;
+                                }
+                            }
+                            break;
+                        }
+                    }
                 }
             }
         }
         std::sort(result.begin(), result.end(), [](const auto& a, const auto& b){ return a.second > b.second; });
-        if (result.size() > 30) result.resize(30);
+        if (result.size() > 50) result.resize(50);
         return result;
     }
 
@@ -230,8 +273,8 @@ public:
         for (char& ch : lookup) if (ch >= 'A' && ch <= 'Z') ch += 32;
 
         std::unordered_map<std::string, int> dictMatches;
-        auto* exactEntries = m_dict.find(lookup);
-        if (exactEntries) for (auto& p : *exactEntries) dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
+        auto exactEntries = m_dict.find(lookup);
+        for (auto& p : exactEntries) dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
         { int maxDepth = 0; if (lookup.size() == 1) maxDepth = 6; else if (lookup.size() == 2) maxDepth = 5;
           m_dict.prefixSearch(lookup, dictMatches, 3, maxDepth); }
         auto uit = m_userDict.find(lookup);

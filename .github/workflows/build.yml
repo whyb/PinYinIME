@@ -69,9 +69,15 @@ jobs:
 
           Copy-Item build\Release\PinyinIME.exe -Destination $staging\
           Copy-Item build\Release\PinyinIMETSF.dll -Destination $staging\
+          Copy-Item build\Release\PinyinIMEDictService.exe -Destination $staging\
+          Copy-Item build\Release\dict_compiler.exe -Destination $staging\
           Copy-Item build\Release\cn_dicts\ -Destination $staging\cn_dicts\ -Recurse
           Copy-Item pinyin_config.ini -Destination $staging\
           Copy-Item user.dict -Destination $staging\
+
+          # dict.bin is NOT pre-built. It gets compiled at install time by
+          # the registration wizard (dict_compiler.exe cn_dicts dict.bin).
+          # We ship the source YAML files + the compiler, not the binary.
 
           Write-Host "=== Staged files ==="
           Get-ChildItem $staging -Recurse | ForEach-Object {
@@ -113,14 +119,24 @@ jobs:
             ### 包含文件
             | 文件 | 说明 |
             |---|---|
-            | `PinyinIME.exe` | 主程序 (x64, 静态链接 CRT) |
-            | `PinyinIMETSF.dll` | 注册到系统TSF需要 |
-            | `cn_dicts/` | rime-ice 原版词库 (8105 + 41448 + base + ext + others + tencent) |
+            | `PinyinIME.exe` | 配置工具 (设置 + 注册/卸载 + 托盘) |
+            | `PinyinIMETSF.dll` | TSF 文本服务 (注入到应用进程) |
+            | `PinyinIMEDictService.exe` | 后台词库服务 (开机自启, IPC 查词) |
+            | `dict_compiler.exe` | 离线词库编译器 (注册时自动运行) |
+            | `cn_dicts/` | rime-ice 原版 YAML 词库 (编译器输入) |
             | `pinyin_config.ini` | 默认配置文件 |
             | `user.dict` | 用户自学习词库 |
 
-            ### 词库
-            词典数据来自 [rime-ice](https://github.com/iDvel/rime-ice)，直接加载原版 YAML 格式，无需转换。覆盖 8105 通用规范汉字 + 41k+ 生僻字 + 54 万常用词组。
+            ### 安装方法
+            1. 解压 `PinyinIME-windows-x64.zip`
+            2. 以**管理员身份**运行 `PinyinIME.exe`
+            3. 点击 **"注册到系统"** 按钮
+            4. 注册向导会自动: 编译词库 → 启动后台服务 → 注册 TSF → 设置开机自启
+            5. 按 **Win+Space** 切换到 "PinyinIME" 即可使用
+
+            ### 架构
+            三层分立: DLL (TSF 注入) + Service (后台查词, mmap 零膨胀加载) + EXE (配置管理)。
+            dict.bin 不在压缩包中 — 由注册向导在安装时自动编译生成。
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

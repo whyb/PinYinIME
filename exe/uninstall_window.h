@@ -11,6 +11,7 @@
 #include <vector>
 #include "../shared/pinyin_settings.h"
 #include "registration.h"
+#include "service_manager.h"
 
 // ==================== 自定义消息 ====================
 #define WM_APP_STEP_COMPLETE (WM_APP + 10)  // wParam=stepIdx, lParam=success(bool)
@@ -33,13 +34,14 @@ enum class StepState : int {
 
 // ==================== 步骤类型 (按执行顺序) ====================
 enum class StepType : int {
-    CheckAdmin      = 0,
-    TsfUnregister   = 1,
-    ComCleanup      = 2,
-    AutostartRemove = 3,
-    DllLockCheck    = 4,
-    FinalCleanup    = 5,
-    Count           = 6,
+    CheckAdmin       = 0,
+    TsfUnregister    = 1,
+    ComCleanup       = 2,
+    StopDictSvc      = 3,  // 停止后台词库服务
+    RemoveDictSvc    = 4,  // 移除词库服务
+    DllLockCheck     = 5,
+    FinalCleanup     = 6,
+    Count            = 7,
 };
 
 // ==================== 每个步骤的信息 ====================
@@ -277,9 +279,10 @@ struct UninstallWindow {
                 SetTextColor(hdc, self->m_textColor);
                 std::wstring tips = L"💡 提示:\n"
                     L"• 卸载后 \"PinyinIME\" 将从系统键盘列表中移除\n"
+                    L"• 后台词库服务 (PinyinIMEDictService.exe) \n"
                     L"• 如 DLL 仍被占用, 请关闭所有使用该输入法的程序\n"
                     L"• 或注销/重启 Windows 后即可替换 DLL 文件\n"
-                    L"• 托盘图标 (PinyinIME.exe) 不受影响";
+                    L"• PinyinIME.exe 配置工具可手动打开, 不会开机自动运行";
                 DrawTextW(hdc, tips.c_str(), -1, &self->m_tipsRect,
                     DT_LEFT | DT_TOP | DT_WORDBREAK);
             }
@@ -388,7 +391,8 @@ struct UninstallWindow {
         m_steps[(int)StepType::CheckAdmin].label      = L"管理员权限检查";
         m_steps[(int)StepType::TsfUnregister].label    = L"TSF 框架卸载";
         m_steps[(int)StepType::ComCleanup].label       = L"COM 注册表清理";
-        m_steps[(int)StepType::AutostartRemove].label  = L"开机自启动移除";
+        m_steps[(int)StepType::StopDictSvc].label      = L"停止后台词库服务";
+        m_steps[(int)StepType::RemoveDictSvc].label    = L"移除词库服务";
         m_steps[(int)StepType::DllLockCheck].label     = L"DLL 占用检查";
         m_steps[(int)StepType::FinalCleanup].label     = L"最终清理";
 
@@ -447,7 +451,7 @@ struct UninstallWindow {
                 L"• 卸载后 \"PinyinIME\" 将从系统键盘列表中移除\n"
                 L"• 如 DLL 仍被占用, 请关闭所有使用该输入法的程序\n"
                 L"• 或注销/重启 Windows 后即可替换 DLL 文件\n"
-                L"• 托盘图标 (PinyinIME.exe) 不受影响";
+                L"• PinyinIME.exe 配置工具可手动打开, 不会开机自动运行";
 
             RECT measureRect = { 0, 0, S(510) - S(15), 0 };
             DrawTextW(hdc, tips.c_str(), -1, &measureRect,
@@ -711,8 +715,11 @@ struct UninstallWindow {
         case StepType::ComCleanup:
             result = executeComCleanup(self->m_dllPath);
             break;
-        case StepType::AutostartRemove:
-            result = executeAutostartRemove();
+        case StepType::StopDictSvc:
+            result = executeStopDictService();
+            break;
+        case StepType::RemoveDictSvc:
+            result = executeRemoveDictService();
             break;
         case StepType::DllLockCheck:
             result = executeDllLockCheck(self->m_dllPath);
@@ -812,36 +819,46 @@ struct UninstallWindow {
         return r;
     }
 
-    // ==================== 步骤 3: 开机自启动移除 ====================
-    static StepResultData executeAutostartRemove() {
+    // ==================== 步骤 3: 停止后台词库服务 ============================
+    static StepResultData executeStopDictService() {
         StepResultData r;
-        HKEY hKey = nullptr;
-        LONG res = RegOpenKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            0, KEY_SET_VALUE, &hKey);
-        if (res == ERROR_SUCCESS) {
-            res = RegDeleteValueW(hKey, L"PinyinIME");
-            RegCloseKey(hKey);
-            if (res == ERROR_SUCCESS) {
-                r.detail = L"开机自启动 已移除";
-                r.success = true;
-            } else if (res == ERROR_FILE_NOT_FOUND) {
-                r.detail = L"开机自启动 无需移除 (不存在)";
-                r.success = true;
-            } else {
-                wchar_t buf[16]; swprintf(buf, 16, L"%08X", res);
-                r.detail = L"开机自启动 移除失败 (0x" + std::wstring(buf) + L")";
-                r.success = false;
-            }
+
+        if (!ServiceManager::isServiceRunning()) {
+            r.detail = L"词库服务 未运行 (无需停止)";
+            r.success = true;
+            return r;
+        }
+
+        // stopService() handles graceful shutdown + force-terminate fallback internally
+        bool stopped = ServiceManager::stopService(5000);  // 5-second timeout
+
+        if (stopped) {
+            r.detail = L"词库服务 已停止";
+            r.success = true;
         } else {
-            wchar_t buf[16]; swprintf(buf, 16, L"%08X", res);
-            r.detail = L"开机自启动 无法打开注册表项 (0x" + std::wstring(buf) + L")";
+            r.detail = L"词库服务 停止失败 (请手动结束 PinyinIMEDictService.exe 进程)";
             r.success = false;
         }
         return r;
     }
 
-    // ==================== 步骤 4: DLL 占用检查 ====================
+    // ==================== 步骤 4: 移除词库服务==========
+    static StepResultData executeRemoveDictService() {
+        StepResultData r;
+
+        bool ok = ServiceManager::uninstallAutoStart();
+        if (ok) {
+            r.detail = L"词库服务 Task Scheduler 任务 已移除";
+            r.success = true;
+        } else {
+            // 可能任务本来就不存在 — 不算严重错误
+            r.detail = L"词库服务 Task Scheduler 任务 移除完成 (可能本就不存在)";
+            r.success = true;
+        }
+        return r;
+    }
+
+    // ==================== 步骤 5: DLL 占用检查 ==============================
     static StepResultData executeDllLockCheck(const std::wstring& dllPath) {
         StepResultData r;
         auto locked = findAndReleaseDllLocks(dllPath.c_str());
@@ -857,7 +874,7 @@ struct UninstallWindow {
         return r;
     }
 
-    // ==================== 步骤 5: 最终清理 ====================
+    // ==================== 步骤 6: 最终清理 ==================================
     static StepResultData executeFinalCleanup(const std::wstring& dllPath) {
         StepResultData r;
 

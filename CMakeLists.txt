@@ -94,7 +94,7 @@ target_include_directories(PinyinIME PRIVATE
 
 target_link_libraries(PinyinIME PRIVATE
     user32 gdi32 kernel32 comctl32 shell32
-    ole32 oleaut32 gdiplus advapi32
+    ole32 oleaut32 gdiplus advapi32 taskschd
 )
 
 set_target_properties(PinyinIME PROPERTIES
@@ -117,8 +117,63 @@ add_custom_command(TARGET PinyinIME POST_BUILD
     COMMENT "Copying rime-ice dictionaries and batch files to EXE output..."
 )
 
+# ==================== Service: PinyinIMEDictService.exe ====================
+set(SERVICE_SOURCES
+    service/dict_service.cpp
+)
+
+set(SERVICE_HEADERS
+    ${SHARED_HEADERS}
+    shared/unique_handle.h
+    shared/dict_binary.h
+    shared/ipc_protocol.h
+)
+
+add_executable(PinyinIMEDictService ${SERVICE_SOURCES} ${SERVICE_HEADERS})
+
+target_include_directories(PinyinIMEDictService PRIVATE
+    ${CMAKE_SOURCE_DIR}/service
+    ${CMAKE_SOURCE_DIR}/shared
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(PinyinIMEDictService PRIVATE
+    user32 kernel32 advapi32
+)
+
+set_target_properties(PinyinIMEDictService PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+
+# ==================== Tool: dict_compiler.exe ====================
+# Standalone offline tool — compiles YAML dicts into dict.bin
+# Not shipped to end users; only used during packaging.
+set(COMPILER_SOURCES
+    service/dict_compiler.cpp
+)
+
+set(COMPILER_HEADERS
+    shared/dict_binary.h
+)
+
+add_executable(dict_compiler ${COMPILER_SOURCES} ${COMPILER_HEADERS})
+
+target_include_directories(dict_compiler PRIVATE
+    ${CMAKE_SOURCE_DIR}/service
+    ${CMAKE_SOURCE_DIR}/shared
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(dict_compiler PRIVATE
+    kernel32
+)
+
+set_target_properties(dict_compiler PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+
 # ==================== 安装 ====================
-install(TARGETS PinyinIMETSF PinyinIME
+install(TARGETS PinyinIMETSF PinyinIME PinyinIMEDictService dict_compiler
     RUNTIME DESTINATION .
     LIBRARY DESTINATION .
 )
@@ -133,8 +188,10 @@ install(FILES ${CMAKE_SOURCE_DIR}/register.bat ${CMAKE_SOURCE_DIR}/unregister.ba
 )
 
 # ==================== 输出信息 ====================
-message(STATUS "PinyinIME v2.0 — TSF 输入法 (DLL + EXE)")
-message(STATUS "  DLL: PinyinIMETSF.dll  (TSF COM 文本服务)")
-message(STATUS "  EXE: PinyinIME.exe     (设置 + 托盘 + 注册)")
+message(STATUS "PinyinIME — 三层分立架构 (DLL + Service + EXE)")
+message(STATUS "  DLL:  PinyinIMETSF.dll        (TSF COM 文本服务, IPC 客户端)")
+message(STATUS "  EXE:  PinyinIME.exe           (设置 + TSF注册/注销 + 服务管理)")
+message(STATUS "  SVC:  PinyinIMEDictService.exe (词库编译 + 词库加载 + IPC 服务)")
+message(STATUS "  TOOL: dict_compiler.exe       (离线编译词库, 由 Service 调用)")
 message(STATUS "  C++17, 静态 CRT (/MT)")
 message(STATUS "  cmake -B build && cmake --build build --config Release")

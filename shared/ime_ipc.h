@@ -27,3 +27,24 @@
 // Guards the creation of the shared dictionary file mapping.
 // The first process to acquire this becomes the designated creator.
 #define PinyinIME_DICT_MUTEX             L"Local\\PinyinIME_DictMutex"
+
+// ── Dict service process management ─────────────────────────────────────
+// The EXE (PinyinIME.exe) uses these to manage the background dict service.
+#define PinyinIME_DICT_SERVICE_EXE       L"PinyinIMEDictService.exe"
+#define PinyinIME_DICT_SERVICE_MUTEX     L"Local\\PinyinIME_DictService_SingleInstance"
+
+// ── Dict service stop event ─────────────────────────────────────────────
+// The EXE signals this event to request the service to gracefully shut down.
+// The service uses WaitForMultipleObjects on both Evt_Query and Evt_Stop.
+// Must be Global\ so the EXE (which may run elevated) can signal it.
+#define PinyinIME_SERVICE_STOP_EVENT     L"Global\\PinyinIME_EvtStop"
+
+// ── Dict service readiness event ────────────────────────────────────────
+// The service signals this global event once dict.bin is loaded and the
+// IPC channel is ready. DLLs and EXE poll/wait on it before querying.
+#define PinyinIME_SERVICE_READY_EVENT    L"Global\\PinyinIME_ServiceReady"
+
+// ── IPC channel (DLL ↔ Service) ─────────────────────────────────────────
+// These are defined in shared/ipc_protocol.h for the protocol layer.
+// Primary names use Global\ for AppContainer sandbox compatibility.
+// Fallback names use Local\ when SeCreateGlobalPrivilege is unavailable.

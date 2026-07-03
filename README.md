@@ -29,7 +29,8 @@
 ### 🎯 核心输入
 - **全拼 / 简拼**: 支持完整拼音和首字母缩写（`nh` → 你好）
 - **DP 拼音分割**: 输入长串拼音自动拆成词组（`haiyoumeiyou` → 还有没有）
-- **内置词库**: 基于 [rime-ice](https://github.com/iDvel/rime-ice) 词典，直接加载原版 YAML 格式，46,000+ 单字，540,000+ 词组，480,000+ 简拼
+- **内置词库**: 基于 [rime-ice](https://github.com/iDvel/rime-ice) 词典，49 万拼音 key，123 万词条，含 46,000+ 单字和大量词组
+- **增量查询**: 长词通过引擎自动分割为短音节逐轮查询，无需在词库中存储长词条（`nihao` → 你好 作为一轮，`shijie` → 世界 作为下一轮）
 - **用户词库**: 自学习，自动记录选词频率，越用越顺手
 - **词频动态调整**: 每次选择自动 +1 频率，下次优先显示
 - **Shift 切换中英文**: 中文输入过程中按 Shift 直接切换纯英文模式（当前拼音以英文字母形式上屏），再按 Shift 切回中文
@@ -55,71 +56,136 @@
 - **系统注册**: 可注册为 Windows 系统输入法，集成到语言栏，支持开机自启
 
 ### 🖥️ 技术亮点
-- **TSF 文本服务框架**: 基于 Windows Text Services Framework (TSF) 实现，告别全局键盘钩子，无需管理员权限即可在大多数应用中使用
-- **EXE + DLL 分离架构**: EXE 负责托盘/设置/注册，DLL 作为 COM 组件被 TSF 加载到各进程，架构清晰、内存隔离
-- **共享内存词库**: 首个加载完成的进程将 Trie 前缀树序列化到命名文件映射，后续进程直接只读映射，零拷贝、零解析、毫秒级启动
-- **UIAutomation + TSF GetTextExt 双模光标检测**: 精准定位文本输入光标，候选框绝不挡字（兼容 Chrome/Edge/VSCode/Firefox/Office 等现代应用）
-- **后台异步加载**: 同步加载字表（毫秒级可用），后台线程异步加载完整词库（~48MB），加载完成后热切换
+- **TSF 文本服务框架**: 基于 Windows Text Services Framework (TSF) 实现，告别全局键盘钩子
+- **三层分立架构**: DLL (TSF 注入) + Service (后台词库) + EXE (设置/注册)，职责清晰
+- **IPC 词库服务**: DLL 通过命名共享内存 + 命名事件与后台服务通信，词库系统级只加载一份
+- **排序数组词库**: dict.bin 采用排序数组 + 二分查找（O(log n)），编译秒级完成，文件仅 25MB
+- **内存映射加载**: dict.bin 通过 MapViewOfFile 零解析加载，OS 按需调页，物理内存仅占用访问过的页面
+- **沙盒穿透**: 命名对象使用 WD + AC 双重 DACL，兼容 Chrome/Edge/UWP 等沙盒应用
+- **UIAutomation + TSF GetTextExt 双模光标检测**: 精准定位文本输入光标，候选框绝不挡字
 - **自绘候选窗口**: GDI+ 纯手工绘制，圆角 + 渐变边框 + 选中反色，无 Qt/Electron 依赖
 - **DisplayAttributeProvider**: TSF 标准组合文本下划线样式，内联拼音显示带虚线标识
 - **CompartmentEventSink**: 监听系统 IME 开关状态，系统关闭输入法时自动提交残留文本
 
 ---
 
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    用户应用程序进程 (Chrome/Edge/Notepad...)           │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  PinyinIMETSF.dll (TSF COM 文本服务, 注入到每个进程)          │   │
+│  │                                                              │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │   │
+│  │  │ TextService  │  │ PinyinEngine │  │ CandidateWindow  │   │   │
+│  │  │ (TSF COM)    │  │ (DictClient) │  │ (GDI+ 自绘)      │   │   │
+│  │  └──────────────┘  └──────┬───────┘  └──────────────────┘   │   │
+│  │                           │ IPC Client                       │   │
+│  └───────────────────────────┼──────────────────────────────────┘   │
+│                              │                                      │
+└──────────────────────────────┼──────────────────────────────────────┘
+                               │
+          Named Shared Memory (64KB) + Named Events
+          Local\ 命名空间 (优先), Global\ 回退 (沙盒兼容)
+                               │
+┌──────────────────────────────┼──────────────────────────────────────┐
+│  PinyinIMEDictService.exe (后台词库服务, 单实例, 常驻)              │
+│                              │                                      │
+│  ┌───────────────────────────┼──────────────────────────────────┐   │
+│  │  IPC Server Loop          │  BinaryDictReader                │   │
+│  │  WaitForMultipleObjects   │  dict.bin (MapViewOfFile)        │   │
+│  │  EvtQuery + EvtStop       │  排序数组 + 二分查找              │   │
+│  └───────────────────────────┴──────────────────────────────────┘   │
+│                                                                      │
+│  dict.bin (~25 MB on disk, ~5 MB RSS)                               │
+│  · 494,072 拼音 key          · 1,236,485 词条                       │
+│  · String Pool (dedup UTF-8) · DictFileEntry[] (word_off, freq)     │
+└──────────────────────────────────────────────────────────────────────┘
+                               ▲
+              Windows Task Scheduler (ONLOGON 触发器)
+              ServiceManager (启动/停止/开机自启)
+                               │
+┌──────────────────────────────┴──────────────────────────────────────┐
+│  PinyinIME.exe (配置工具)                                           │
+│  ┌──────────────┐  ┌────────────────┐  ┌──────────────────────┐    │
+│  │ Settings UI  │  │ TSF Register   │  │ ServiceManager       │    │
+│  │ (皮肤/字体)  │  │ (系统注册/注销) │  │ (服务管理/开机自启)  │    │
+│  └──────────────┘  └────────────────┘  └──────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 词库编译
+
+dict.bin 由 `dict_compiler.exe` 离线编译生成：
+
+```
+dict_compiler.exe cn_dicts dict.bin [--max-chars N]
+```
+
+- 解析 rime-ice YAML 词库文件（8105 字表、41448 大字表、base/ext/others/tencent 词组）
+- 按汉字字数过滤（默认最多 3 字），长词由输入法引擎的增量查询自动处理
+- 生成排序数组格式的二进制词库（v3 格式），编译秒级完成
+- 运行时通过 `MapViewOfFile` 零解析加载，二分查找精确匹配（O(log n)），前缀扫描完成联想
+
+### IPC 协议
+
+- **通道**: 64KB 命名共享内存 (page-file-backed) + 2 个命名 Auto-Reset 事件
+- **协议**: DLL 写入拼音 → 设置状态 → 触发 EvtQuery → 等待 EvtReply（50ms 超时）
+- **安全**: WD (Everyone) + AC (AppContainer) 双重 DACL，兼容沙盒应用
+- **命名空间**: Local\ 优先（无需特权的常见场景），Global\ 回退（提升的沙盒兼容）
+- **服务生命周期**: Task Scheduler ONLOGON 自启，EXE 可手动启动/停止
+
+---
+
 ## 编译
 
 ### 环境要求
-- Windows 8+
+- Windows 10+
 - Visual Studio 2022 (带 C++ 桌面开发工作负载)
 - CMake 3.16+
 
-### 方式一：build.bat（推荐）
-
-在 **VS2022 Developer Command Prompt** 中：
-
-```cmd
-cd D:\codes\github\InputMethod
-build.bat
-```
-
-输出：
-- `build\Release\PinyinIMETSF.dll` — TSF 文本服务 DLL
-- `build\Release\PinyinIME.exe` — 设置/托盘/注册程序
-
-### 方式二：CMake 手动编译
+### 构建
 
 ```cmd
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-两个产物均静态链接 CRT (`/MT`)，无需安装任何运行时。
+输出：
+- `build/Release/PinyinIMETSF.dll` — TSF 文本服务 DLL
+- `build/Release/PinyinIMEDictService.exe` — 后台词库服务
+- `build/Release/PinyinIME.exe` — 设置/注册程序
+- `build/Release/dict_compiler.exe` — 离线词库编译器
+
+所有产物均静态链接 CRT (`/MT`)，无需安装任何运行时。
 
 ---
 
 ## 使用方法
 
-### 快速体验（免注册）
-1. 运行 `build\Release\PinyinIME.exe`
-2. 托盘图标右键 → ⚙ 设置
-3. 在任意编辑器中测试输入（部分应用需要注册为系统输入法才能使用）
-
-### 注册为系统输入法（推荐）
+### 注册为系统输入法
 1. 运行 `build\Release\PinyinIME.exe`（需**管理员权限**）
 2. 打开设置 → 点击「📌 注册输入法到系统」
-3. 或双击同目录的 `register.bat`
-4. 进入 **Windows 设置 → 时间和语言 → 语言 → 中文 → 键盘 → 添加键盘 → PinyinIME**
-5. 使用 **Win+Space** 切换到 PinyinIME
+3. 进入 **Windows 设置 → 时间和语言 → 语言 → 中文 → 键盘 → 添加键盘 → PinyinIME**
+4. 使用 **Win+Space** 切换到 PinyinIME
+
+注册过程会自动：
+- 注册 COM 组件和 TSF Profile
+- 编译 dict.bin（如不存在）
+- 创建 Task Scheduler 开机自启任务
+- 启动后台词库服务
 
 ### 输入操作
-- **Shift**: 切换中/英文模式（中文模式下提交当前拼音为英文）
+- **Shift**: 切换中/英文模式
 - **空格**: 确认第一个候选
 - **数字 1-9**: 选择对应候选
-- **Enter**: 将拼音字母直接上屏（不选候选）
-- **- / =**: 上一页 / 下一页（可开关）
-- **, / .**: 上一页 / 下一页（可开关）
-- **[ / ]**: 上一页 / 下一页（可开关）
-- **Tab / Shift+Tab**: 下一页 / 上一页（可开关）
+- **Enter**: 将拼音字母直接上屏
+- **- / =**: 上一页 / 下一页
+- **, / .**: 上一页 / 下一页
+- **[ / ]**: 上一页 / 下一页
+- **Tab / Shift+Tab**: 下一页 / 上一页
 - **PageUp / PageDown**: 翻页
 - **← / →**: 候选词选择导航
 - **Backspace**: 删除最后一个字母
@@ -136,110 +202,31 @@ cmake --build build --config Release
 | `exe/main.cpp` | EXE 入口：托盘图标、跨进程消息、单实例管理 |
 | `exe/settings_window.h` | 设置窗口：纯 Win32 自绘 UI、皮肤预览、用户词典对话框 |
 | `exe/registration.h` | TSF 系统注册：COM 注册、TSF Profile 注册、UAC 提权 |
+| `exe/service_manager.h` | 服务管理：启动/停止 PinyinIMEDictService、Task Scheduler 开机自启 |
+| `exe/register_window.h` | 注册进度窗口：逐步展示 COM/TSF/词库编译/服务启动过程 |
 | `dll/dll_main.cpp` | DLL 入口：COM DllMain、DllRegisterServer、DllGetClassObject |
 | `dll/text_service.cpp` | **TSF 核心**：ITfTextInputProcessorEx、ITfKeyEventSink、组合管理、按键处理 |
 | `dll/text_service.h` | TSF 接口声明 + DisplayAttribute + EditSession |
 | `dll/class_factory.h` | COM IClassFactory 实现 |
 | `dll/pinyin_engine.h` | 拼音引擎：缓冲区、候选匹配、DP 分词、自学习、翻页 |
+| `dll/dict_client.h` | **IPC 词库客户端**：通过命名共享内存与 DictService 通信 |
+| `dll/ipc_client.h` | **IPC 协议客户端**：共享内存映射、查询/回复事件、50ms 超时 |
 | `dll/candidate_window.h` | GDI+ 候选窗：自绘渲染、齿轮按钮、光标定位 |
-| `dll/dictionary.h` | 词库管理：YAML 加载、后台线程、共享内存切换、字符→拼音映射 |
-| `dll/trie_dict.h/cpp` | 前缀树内存数据库：26 分支固定数组、O(L+M) 前缀查找、DFS 深度限制 |
-| `dll/shm_dict.h/cpp` | 共享内存扁平 Trie：二进制序列化/反序列化、跨进程只读查询 |
+| `dll/shm_dict.h/cpp` | 共享内存扁平 Trie（遗留，已被 IPC 模式替代） |
+| `dll/trie_dict.h/cpp` | 前缀树内存数据库（遗留） |
 | `dll/s2t_data.h` | 简繁转换数据：2000+ 字符映射 + 词汇消歧 + 两岸 IT 术语 |
+| `service/dict_service.cpp` | **后台词库服务**：dict.bin mmap 加载、IPC 服务循环、单实例保证 |
+| `service/dict_compiler.cpp` | **离线词库编译器**：YAML→dict.bin，排序数组格式 |
+| `shared/dict_binary.h` | 二进制词库格式定义 + BinaryDictReader 查询引擎（v2 DAT / v3 排序数组） |
+| `shared/ipc_protocol.h` | IPC 协议：共享内存布局、事件名、沙盒安全描述符、命名空间回退策略 |
+| `shared/ime_ipc.h` | 跨进程内核对象名：单实例互斥体、服务互斥体、窗口消息 |
 | `shared/pinyin_settings.h` | DLL/EXE 共享设置结构：序列化/反序列化、9 款预设皮肤 |
-| `shared/ime_ipc.h` | 跨进程 IPC 常量：互斥体、窗口消息、共享内存名 |
 | `shared/tsf_guids.h` | TSF GUID 定义：CLSID、Profile GUID |
+| `shared/unique_handle.h` | RAII Windows HANDLE 封装 |
 | `shared/utf_utils.h` | UTF-8 / UTF-16 / Wide 转换工具 |
-| `rime-ice/cn_dicts/` | rime-ice 词库（git submodule）|
-| `pinyin_config.ini` | 用户配置文件（运行时生成）|
-| `user.dict` | 用户自学习词库（运行时生成）|
-
----
-
-## 技术架构
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Windows TSF 框架 (Text Services Framework)                             │
-│                                                                         │
-│  ┌─────────────────────┐    ┌─────────────────────┐                    │
-│  │  PinyinIME.exe      │    │  宿主应用 (记事本/   │                    │
-│  │  · 托盘图标          │    │   Chrome/VSCode…)   │                    │
-│  │  · 设置窗口          │    │                     │                    │
-│  │  · 系统注册          │    │  ┌───────────────┐  │                    │
-│  │  · IPC 跨进程唤起    │◄──►│  │ PinyinIMETSF  │  │                    │
-│  └─────────────────────┘    │  │ .dll (COM In- │  │                    │
-│                             │  │   proc Server)│  │                    │
-│  ┌─────────────────────┐    │  │             │  │                    │
-│  │ 共享内存词库         │◄──►│  │ ┌─────────┐ │  │                    │
-│  │ Local\PinyinIME_…   │    │  │ │CPinyin  │ │  │                    │
-│  └─────────────────────┘    │  │ │TextService│ │  │                    │
-│                             │  │ │         │ │  │                    │
-│                             │  │ │·ITfKey  │ │  │                    │
-│                             │  │ │ EventSink│ │  │                    │
-│                             │  │ │·ITfComp- │ │  │                    │
-│                             │  │ │ osition  │ │  │                    │
-│                             │  │ │·ITfDisp- │ │  │                    │
-│                             │  │ │ layAttr… │ │  │                    │
-│                             │  │ └────┬────┘ │  │                    │
-│                             │  │      │      │  │                    │
-│                             │  │ ┌────┴────┐ │  │                    │
-│                             │  │ │PinyinEngine│ │                    │
-│                             │  │ │·TrieDict  │ │                    │
-│                             │  │ │·FlatTrie  │ │                    │
-│                             │  │ │·UserDict  │ │  │                    │
-│                             │  │ └────┬────┘ │  │                    │
-│                             │  │      │      │  │                    │
-│                             │  │ ┌────┴────┐ │  │                    │
-│                             │  │ │CandidateWin│ │                    │
-│                             │  │ │·GDI+ 自绘 │ │  │                    │
-│                             │  │ │·UIA 光标  │ │  │                    │
-│                             │  │ └─────────┘ │  │                    │
-│                             │  └───────────────┘  │                    │
-│                             └─────────────────────┘                    │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## TrieDict 高性能前缀树内存数据库
-
-### 节点结构
-
-每个节点 216 字节，固定 26 子节点指针（a-z），无哈希、无碰撞：
-
-```
-     ┌───────────────────────────────────────────────┐
-     │              TrieNode (216 bytes)              │
-     │                                               │
-     │  children[26]:  TrieNode* 数组 (208 bytes)     │
-     │  ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐   │
-     │  │ a │ b │ c │ d │ e │ f │ g │ h │ i │ j │...│   │
-     │  └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘   │
-     │    ↓   ↓   ↓   ↓   ↓           ↓               │
-     │  ...  ... ... ... ...         ...              │
-     │                                               │
-     │  entries:  vector<Entry>* (8 bytes)            │
-     │    仅终端节点非空 ← 避免空 vector 浪费          │
-     └───────────────────────────────────────────────┘
-```
-
-索引: `ch - 'a'` 直接定位，一条 `mov` 指令完成，比 `std::unordered_map` 哈希快 3-5 倍。
-
-### 共享内存扁平化 (FlatTrie)
-
-后台线程完成 YAML 解析并构建 TrieDict 后，首进程将其序列化为偏移型二进制格式写入命名文件映射：
-
-```
-[ShmHeader 64 B] → [ShmNode[] 112 B × N] → [ShmEntry[] 8 B × M] → [String table]
-```
-
-后续进程只需 `OpenFileMapping` + `MapViewOfFile` 即可获得完整查询能力，无需：
-- 解析 YAML
-- 分配堆内存
-- 构建指针树
-
-**效果**: 多进程共用一份物理内存，每个额外进程仅消耗 ~2MB 堆外开销（映射页表），启动时间从数秒降至毫秒级。
+| `rime-ice/cn_dicts/` | rime-ice 词库（git submodule） |
+| `pinyin_config.ini` | 用户配置文件（运行时生成） |
+| `user.dict` | 用户自学习词库（运行时生成） |
 
 ---
 
@@ -266,17 +253,6 @@ cmake --build build --config Release
 2. 自动保存到 `user.dict` 文件
 3. 下次输入相同拼音时，高频词优先显示
 4. 候选排序 = 系统词库基础频率 + 用户学习频率
-
----
-
-## 注意事项
-
-- **系统注册**: 将 PinyinIME 注册为系统输入法需要管理员权限（UAC 提权）
-- **卸载**: 运行 `unregister.bat` 或点击设置中的「取消注册」可完整移除系统输入法条目
-- **词库路径**: DLL 加载到不同进程后工作目录可能变化，词库通过 `GetModuleFileNameW(g_hDllInst)` 定位，确保始终正确
-- **UIAutomation 光标检测**: 在 Chrome/Edge/VSCode/Office 等现代应用中工作良好，老旧程序回退到 Win32/MSAA/前台窗口检测
-- **首次运行**: 会在同目录生成 `pinyin_config.ini`（配置文件）和 `user.dict`（用户词库）
-- **共享内存**: 词库共享内存为会话级（session-local），注销或重启后自动释放
 
 ---
 
