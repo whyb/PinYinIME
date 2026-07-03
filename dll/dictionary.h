@@ -129,16 +129,20 @@ struct PinyinDict {
     // buildCharMap:   是否用单字条目构建字符→拼音映射
     static int loadRimeFile(const std::string& filepath, bool addAbbrev, bool buildCharMap,
                             TrieDict& targetTrie,
-                            CharPinyinMap& targetCharMap)
+                            CharPinyinMap& targetCharMap,
+                            int maxLines = -1)
     {
         std::ifstream fin(filepath);
         if (!fin.is_open()) return 0;
 
         bool inData = false;
         int count = 0;
+        int lineNo = 0;
         std::string line;
 
         while (std::getline(fin, line)) {
+            lineNo++;
+            if (maxLines > 0 && count >= maxLines) break;
             if (line.empty()) continue;
 
             // YAML 文档标记
@@ -439,12 +443,16 @@ struct PinyinDict {
         int n2 = loadRimeFile(dir + "41448.dict.yaml", false, true,
                               m_trie, charToPinyins);
 
+        // 同步预加载高频多字词 (base.dict.yaml 前 150K 条, 覆盖常用补全需求)
+        int n3 = loadRimeFile(dir + "base.dict.yaml", true, false,
+                              m_trie, charToPinyins, 150000);
+
         dedupAndSort(m_trie);
 
         char buf[256];
         snprintf(buf, sizeof(buf),
-            "[PinyinIME] Startup dict loaded: chars %d+%d, %zu keys (background loading...)\n",
-            n1, n2, m_trie.keyCount());
+            "[PinyinIME] Startup dict loaded: chars %d+%d, common_words %d, %zu keys (background loading...)\n",
+            n1, n2, n3, m_trie.keyCount());
         OutputDebugStringA(buf);
 
         // ── 尝试成为共享词库的创建者 ──
