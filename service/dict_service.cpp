@@ -163,6 +163,7 @@ public:
         m_hEvtQuery.reset();
         m_hEvtReply.reset();
         m_hEvtStop.reset();
+        m_hIpcMutex.reset();
         m_hServiceReady.reset();
     }
 
@@ -252,7 +253,7 @@ private:
         LOG("  SDDL DACL: %s", sd.hasDacl() ? "OK" : "NULL (sandbox may not work)");
 
         for (int attempt = 0; attempt < 2; ++attempt) {
-            IpcNamespace ns = (attempt == 0) ? IpcNamespace::Local : IpcNamespace::Global;
+            IpcNamespace ns = (attempt == 0) ? IpcNamespace::Global : IpcNamespace::Local;
             const wchar_t* evtQueryName = (ns == IpcNamespace::Global) ? PinyinIME_IPC_EVT_QUERY  : PinyinIME_IPC_EVT_QUERY_FALLBACK;
             const wchar_t* evtReplyName = (ns == IpcNamespace::Global) ? PinyinIME_IPC_EVT_REPLY  : PinyinIME_IPC_EVT_REPLY_FALLBACK;
             const wchar_t* mappingName  = (ns == IpcNamespace::Global) ? PinyinIME_IPC_MAPPING    : PinyinIME_IPC_MAPPING_FALLBACK;
@@ -264,7 +265,10 @@ private:
             if (!hQuery.valid()) {
                 DWORD err = GetLastError();
                 LOG("    EvtQuery FAIL (err=%lu)", err);
-                if (attempt == 0 && isGlobalNamespaceError(err)) continue;
+                if (attempt == 0 && isGlobalNamespaceError(err)) {
+                    LOG("    Global\\ namespace unavailable (missing SeCreateGlobalPrivilege), falling back to Local\\");
+                    continue;
+                }
                 return false;
             }
             LOG("    EvtQuery OK (isNew=%d)", GetLastError() != ERROR_ALREADY_EXISTS);
@@ -298,10 +302,17 @@ private:
             hdr->query_id = 0;
             hdr->status = IPC_STATUS_IDLE;
 
+            // Create IPC mutex (prevents concurrent multi-DLL query corruption)
+            const wchar_t* mutexName = (ns == IpcNamespace::Global)
+                ? PinyinIME_IPC_MUTEX : L"Local\\PinyinIME_IpcMutex";
+            unique_handle hMutex(CreateMutexW(&sd, FALSE, mutexName));
+            LOG("    IpcMutex %s", hMutex.valid() ? "OK" : "FAIL (best-effort)");
+
             m_ipcView.reset(view);
             m_ipcMapping.reset(hMapping.release());
             m_hEvtQuery.reset(hQuery.release());
             m_hEvtReply.reset(hReply.release());
+            m_hIpcMutex.reset(hMutex.release());
             m_ipcNamespace = ns;
             return true;
         }
@@ -416,6 +427,7 @@ private:
     unique_handle    m_hEvtQuery;
     unique_handle    m_hEvtReply;
     unique_handle    m_hEvtStop;
+    unique_handle    m_hIpcMutex;     // Cross-process mutex (prevents query corruption)
     unique_handle    m_hServiceReady;
     std::atomic<bool> m_running{false};
     IpcNamespace     m_ipcNamespace = IpcNamespace::Global;

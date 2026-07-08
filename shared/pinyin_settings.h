@@ -71,6 +71,15 @@ struct PinyinSettings {
     bool loadFromFile(const std::string& path) {
         std::ifstream fin(path);
         if (!fin.is_open()) return false;
+
+        // Safe numeric parsers — corrupt config values must not crash the DLL
+        auto safeStoul = [](const std::string& s, unsigned long def = 0) -> unsigned long {
+            try { return std::stoul(s); } catch (...) { return def; }
+        };
+        auto safeStoi = [](const std::string& s, int def = 0) -> int {
+            try { return std::stoi(s); } catch (...) { return def; }
+        };
+
         std::string line;
         while (std::getline(fin, line)) {
             if (line.empty() || line[0] == '#') continue;
@@ -84,14 +93,14 @@ struct PinyinSettings {
             val.erase(val.find_last_not_of(" \t") + 1);
 
             if (key == "useTraditional") useTraditional = (val == "1");
-            else if (key == "bgColor") bgColor = (COLORREF)std::stoul(val);
-            else if (key == "borderColor") borderColor = (COLORREF)std::stoul(val);
-            else if (key == "textColor") textColor = (COLORREF)std::stoul(val);
-            else if (key == "indexColor") indexColor = (COLORREF)std::stoul(val);
-            else if (key == "inputColor") inputColor = (COLORREF)std::stoul(val);
+            else if (key == "bgColor") bgColor = (COLORREF)safeStoul(val, RGB(0xF0,0xF5,0xF0));
+            else if (key == "borderColor") borderColor = (COLORREF)safeStoul(val, RGB(0x96,0xC6,0x96));
+            else if (key == "textColor") textColor = (COLORREF)safeStoul(val, RGB(0x28,0x3D,0x28));
+            else if (key == "indexColor") indexColor = (COLORREF)safeStoul(val, RGB(0x3C,0x81,0x3C));
+            else if (key == "inputColor") inputColor = (COLORREF)safeStoul(val, RGB(0x32,0x64,0x32));
             else if (key == "fontName") fontName = utf8ToWide(val);
-            else if (key == "fontSize") fontSize = std::stoi(val);
-            else if (key == "candidateCount") candidateCount = std::stoi(val);
+            else if (key == "fontSize") fontSize = safeStoi(val, 20);
+            else if (key == "candidateCount") candidateCount = safeStoi(val, 5);
             else if (key == "verticalLayout") verticalLayout = (val == "1");
             else if (key == "fuzzyZ_Zh") fuzzyZ_Zh = (val == "1");
             else if (key == "fuzzyC_Ch") fuzzyC_Ch = (val == "1");

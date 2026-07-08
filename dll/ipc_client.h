@@ -69,20 +69,20 @@ public:
     bool connect() {
         if (m_connected) return true;
 
-        // Step 1: Try Local\ namespace first (most reliable, no privilege needed)
-        if (tryConnect(PinyinIME_IPC_MAPPING_FALLBACK,
-                       PinyinIME_IPC_EVT_QUERY_FALLBACK,
-                       PinyinIME_IPC_EVT_REPLY_FALLBACK)) {
-            m_namespaceUsed = IpcNamespace::Local;
-            m_connected = true;
-            return true;
-        }
-
-        // Step 2: Fall back to Global\ namespace (needed for sandboxed apps)
+        // Step 1: Try Global\ namespace first (required for sandboxed apps)
         if (tryConnect(PinyinIME_IPC_MAPPING,
                        PinyinIME_IPC_EVT_QUERY,
                        PinyinIME_IPC_EVT_REPLY)) {
             m_namespaceUsed = IpcNamespace::Global;
+            m_connected = true;
+            return true;
+        }
+
+        // Step 2: Fall back to Local\ namespace (when service lacked SeCreateGlobalPrivilege)
+        if (tryConnect(PinyinIME_IPC_MAPPING_FALLBACK,
+                       PinyinIME_IPC_EVT_QUERY_FALLBACK,
+                       PinyinIME_IPC_EVT_REPLY_FALLBACK)) {
+            m_namespaceUsed = IpcNamespace::Local;
             m_connected = true;
             return true;
         }
@@ -94,11 +94,16 @@ public:
     // ── Disconnect ──────────────────────────────────────────────────────
 
     void disconnect() {
+        if (m_hIpcMutex.valid()) {
+            ReleaseMutex(m_hIpcMutex.get());
+        }
+        m_hIpcMutex.reset();
         m_ipcView.reset();
         m_ipcMapping.reset();
         m_hEvtQuery.reset();
         m_hEvtReply.reset();
         m_connected = false;
+        m_consecutiveTimeouts = 0;
     }
 
     bool isConnected() const { return m_connected; }
@@ -123,6 +128,40 @@ public:
 
         if (!m_connected || pinyin.empty()) {
             return results;
+        }
+
+        // ── Acquire IPC mutex (prevents concurrent query corruption) ─────
+        // RAII guard: releases mutex on scope exit
+        struct MutexGuard {
+            HANDLE h;
+            ~MutexGuard() { if (h) ReleaseMutex(h); }
+        } guard = { m_hIpcMutex.valid() ? m_hIpcMutex.get() : nullptr };
+
+        if (guard.h) {
+            DWORD waitResult = WaitForSingleObject(guard.h, IPC_QUERY_TIMEOUT_MS);
+            if (waitResult != WAIT_OBJECT_0 && waitResult != WAIT_ABANDONED) {
+                return results;  // Mutex timeout — another DLL is likely querying
+            }
+        }
+
+        // ── Reconnection check (P0-3: recover after service restart) ────
+        if (m_consecutiveTimeouts >= 3) {
+            if (isServiceReady()) {
+                // Service is back online — reconnect to new kernel objects
+                disconnect();
+                if (connect()) {
+                    // Update guard with new mutex handle
+                    if (m_hIpcMutex.valid()) {
+                        if (guard.h) ReleaseMutex(guard.h);
+                        guard.h = m_hIpcMutex.get();
+                        WaitForSingleObject(guard.h, IPC_QUERY_TIMEOUT_MS);
+                    }
+                } else {
+                    return results;  // Reconnection failed
+                }
+            } else {
+                return results;  // Service still down, don't bother querying
+            }
         }
 
         // Truncate if too long
@@ -174,12 +213,16 @@ public:
         if (waitResult != WAIT_OBJECT_0) {
             // Timeout or error — reset the channel and return empty
             if (waitResult == WAIT_TIMEOUT) {
+                m_consecutiveTimeouts++;
                 InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->status),
                                     IPC_STATUS_IDLE);
             }
             // WAIT_FAILED or WAIT_ABANDONED — channel may be broken
             return results;
         }
+
+        // ── Successful reply — reset timeout counter ────────────────────
+        m_consecutiveTimeouts = 0;
 
         // ── Read the results ────────────────────────────────────────────
         uint32_t replyStatus = hdr->status;
@@ -229,14 +272,14 @@ public:
     // ── Check if the service is ready ───────────────────────────────────
 
     static bool isServiceReady() {
-        // Try Local\ first (matches service's Local-first strategy)
-        unique_handle hReady(OpenEventW(SYNCHRONIZE, FALSE, L"Local\\PinyinIME_ServiceReady"));
+        // Try Global\ first (primary namespace for sandbox compatibility)
+        unique_handle hReady(OpenEventW(SYNCHRONIZE, FALSE, PinyinIME_SERVICE_READY_EVENT));
         if (hReady.valid()) {
             DWORD result = WaitForSingleObject(hReady.get(), 0);
             if (result == WAIT_OBJECT_0) return true;
         }
-        // Fallback: Global\ (for elevated or privileged service instances)
-        hReady.reset(OpenEventW(SYNCHRONIZE, FALSE, PinyinIME_SERVICE_READY_EVENT));
+        // Fallback: Local\ (when service lacked SeCreateGlobalPrivilege)
+        hReady.reset(OpenEventW(SYNCHRONIZE, FALSE, L"Local\\PinyinIME_ServiceReady"));
         if (hReady.valid()) {
             DWORD result = WaitForSingleObject(hReady.get(), 0);
             return (result == WAIT_OBJECT_0);
@@ -280,11 +323,16 @@ private:
             return false;
         }
 
-        // Step 3: Store handles
+        // Step 3: Open the IPC mutex (prevents concurrent query corruption)
+        unique_handle hMutex(OpenMutexW(SYNCHRONIZE, FALSE, PinyinIME_IPC_MUTEX));
+        // Mutex is optional — protocol still works without it (best-effort)
+
+        // Step 4: Store handles
         m_ipcView.reset(view);
         m_ipcMapping.reset(hMapping.release());
         m_hEvtQuery.reset(hQuery.release());
         m_hEvtReply.reset(hReply.release());
+        m_hIpcMutex.reset(hMutex.release());  // may be invalid (optional)
 
         return true;
     }
@@ -294,8 +342,10 @@ private:
     scoped_unmap  m_ipcView;       // Mapped view base address
     unique_handle m_hEvtQuery;     // "Query ready" event (signal to service)
     unique_handle m_hEvtReply;     // "Reply ready" event (wait for service)
+    unique_handle m_hIpcMutex;     // Cross-process mutex (prevents query corruption)
 
     // ── State ───────────────────────────────────────────────────────────
-    bool          m_connected     = false;
-    IpcNamespace  m_namespaceUsed = IpcNamespace::Global;
+    bool          m_connected            = false;
+    IpcNamespace  m_namespaceUsed        = IpcNamespace::Global;
+    int           m_consecutiveTimeouts  = 0;     // For reconnection detection
 };
