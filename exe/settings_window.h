@@ -334,10 +334,7 @@ struct SettingsWindow {
         addCheck(L"en/eng 不分",506,S(125),gy,S(110),S(20),m_temp.fuzzyEn_Eng);
         addCheck(L"in/ing 不分",507,S(240),gy,S(110),S(20),m_temp.fuzzyIn_Ing);gy+=S(28);
 
-        addLabel(L"━━ 智能功能 ━━",S(15),gy,S(200),S(18));gy+=S(22);
-        addCheck(L"智能拼音纠错",601,S(20),gy,S(140),S(20),m_temp.smartCorrection);
-        addCheck(L"自动加入新词到用户词典",602,S(170),gy,S(190),S(20),m_temp.autoWordCreate);
-        addCheck(L"词频自动调整",603,S(370),gy,S(140),S(20),m_temp.autoFreqAdjust);gy+=S(30);
+        gy+=S(30);
 
         addLabel(L"━━ 候选翻页 ━━",S(15),gy,S(200),S(18));gy+=S(22);
         addCheck(L"启用 -/= 翻页",920,S(20),gy,S(145),S(20),m_temp.enableMinusEqualsPage);
@@ -577,9 +574,6 @@ struct SettingsWindow {
                 self->m_temp.fuzzyF_H=(IsDlgButtonChecked(hwnd,505)==BST_CHECKED);
                 self->m_temp.fuzzyEn_Eng=(IsDlgButtonChecked(hwnd,506)==BST_CHECKED);
                 self->m_temp.fuzzyIn_Ing=(IsDlgButtonChecked(hwnd,507)==BST_CHECKED);
-                self->m_temp.smartCorrection=(IsDlgButtonChecked(hwnd,601)==BST_CHECKED);
-                self->m_temp.autoWordCreate=(IsDlgButtonChecked(hwnd,602)==BST_CHECKED);
-                self->m_temp.autoFreqAdjust=(IsDlgButtonChecked(hwnd,603)==BST_CHECKED);
                 self->m_temp.enableMinusEqualsPage=(IsDlgButtonChecked(hwnd,920)==BST_CHECKED);
                 self->m_temp.enableCommaPeriodPage=(IsDlgButtonChecked(hwnd,921)==BST_CHECKED);
                 self->m_temp.enableTabPage=(IsDlgButtonChecked(hwnd,922)==BST_CHECKED);

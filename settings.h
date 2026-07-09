@@ -80,9 +80,6 @@ struct PinyinSettings {
     bool fuzzyIn_Ing = false;
 
     // === 智能功能 ===
-    bool smartCorrection  = true;
-    bool autoWordCreate   = true;
-    bool autoFreqAdjust   = true;
     bool chinesePunctuation = true;
 
     // === 快捷键 ===
@@ -140,9 +137,6 @@ struct PinyinSettings {
             else if (key == "fuzzyF_H") fuzzyF_H = (val == "1");
             else if (key == "fuzzyEn_Eng") fuzzyEn_Eng = (val == "1");
             else if (key == "fuzzyIn_Ing") fuzzyIn_Ing = (val == "1");
-            else if (key == "smartCorrection") smartCorrection = (val == "1");
-            else if (key == "autoWordCreate") autoWordCreate = (val == "1");
-            else if (key == "autoFreqAdjust") autoFreqAdjust = (val == "1");
             else if (key == "chinesePunctuation") chinesePunctuation = (val == "1");
             else if (key == "toggleHotkey") toggleHotkey = (DWORD)std::stoul(val);
             else if (key == "toggleModifier") { toggleModifier = (DWORD)std::stoul(val); hasToggleModifierInFile = true; }
@@ -171,9 +165,6 @@ struct PinyinSettings {
         fout << "fuzzyF_H=" << fuzzyF_H << "\n";
         fout << "fuzzyEn_Eng=" << fuzzyEn_Eng << "\n";
         fout << "fuzzyIn_Ing=" << fuzzyIn_Ing << "\n";
-        fout << "smartCorrection=" << smartCorrection << "\n";
-        fout << "autoWordCreate=" << autoWordCreate << "\n";
-        fout << "autoFreqAdjust=" << autoFreqAdjust << "\n";
         fout << "chinesePunctuation=" << chinesePunctuation << "\n";
         fout << "toggleHotkey=" << (unsigned long)toggleHotkey << "\n";
         fout << "toggleModifier=" << (unsigned long)toggleModifier << "\n";
@@ -641,11 +632,6 @@ struct SettingsDialog {
         CheckDlgButton(hDlg, 506, g_tempSettings.fuzzyEn_Eng ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, 507, g_tempSettings.fuzzyIn_Ing ? BST_CHECKED : BST_UNCHECKED);
 
-        // 智能功能
-        CheckDlgButton(hDlg, 601, g_tempSettings.smartCorrection ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, 602, g_tempSettings.autoWordCreate ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, 603, g_tempSettings.autoFreqAdjust ? BST_CHECKED : BST_UNCHECKED);
-
         // 皮肤下拉
         HWND hSkin = GetDlgItem(hDlg, 701);
         SendMessageW(hSkin, CB_RESETCONTENT, 0, 0);
@@ -759,10 +745,6 @@ struct SettingsDialog {
                 g_tempSettings.fuzzyF_H = (IsDlgButtonChecked(hDlg, 505) == BST_CHECKED);
                 g_tempSettings.fuzzyEn_Eng = (IsDlgButtonChecked(hDlg, 506) == BST_CHECKED);
                 g_tempSettings.fuzzyIn_Ing = (IsDlgButtonChecked(hDlg, 507) == BST_CHECKED);
-
-                g_tempSettings.smartCorrection = (IsDlgButtonChecked(hDlg, 601) == BST_CHECKED);
-                g_tempSettings.autoWordCreate = (IsDlgButtonChecked(hDlg, 602) == BST_CHECKED);
-                g_tempSettings.autoFreqAdjust = (IsDlgButtonChecked(hDlg, 603) == BST_CHECKED);
 
                 // 应用设置
                 g_settings = g_tempSettings;
@@ -1118,9 +1100,6 @@ struct SettingsWindow {
         addLabel(L"━━ 智能功能 ━━", S(15), gy, S(200), S(18));
         gy += S(22);
 
-        addCheck(L"智能拼音纠错", 601, S(20), gy, S(140), S(20), m_temp.smartCorrection);
-        addCheck(L"自动加入新词到用户词典", 602, S(170), gy, S(190), S(20), m_temp.autoWordCreate);
-        addCheck(L"词频自动调整", 603, S(370), gy, S(140), S(20), m_temp.autoFreqAdjust);
         gy += S(30);
 
         // === 系统设置组 ===
@@ -1327,10 +1306,6 @@ struct SettingsWindow {
                 self->m_temp.fuzzyF_H = (IsDlgButtonChecked(hwnd, 505) == BST_CHECKED);
                 self->m_temp.fuzzyEn_Eng = (IsDlgButtonChecked(hwnd, 506) == BST_CHECKED);
                 self->m_temp.fuzzyIn_Ing = (IsDlgButtonChecked(hwnd, 507) == BST_CHECKED);
-
-                self->m_temp.smartCorrection = (IsDlgButtonChecked(hwnd, 601) == BST_CHECKED);
-                self->m_temp.autoWordCreate = (IsDlgButtonChecked(hwnd, 602) == BST_CHECKED);
-                self->m_temp.autoFreqAdjust = (IsDlgButtonChecked(hwnd, 603) == BST_CHECKED);
 
                 // 读取切换热键
                 {

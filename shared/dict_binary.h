@@ -44,19 +44,80 @@ public:
         m_base = static_cast<char*>(mappingBase);
         m_header = static_cast<DictFileHeader*>(mappingBase);
         if (!m_header || m_header->magic != DICT_BIN_MAGIC) { m_base = nullptr; m_header = nullptr; return false; }
+
+        // Get actual mapping size via VirtualQuery for bounds validation
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (!VirtualQuery(mappingBase, &mbi, sizeof(mbi)) || mbi.RegionSize < DICT_BIN_HEADER_SIZE) {
+            m_base = nullptr; m_header = nullptr; return false;
+        }
+        size_t mapSize = mbi.RegionSize;
+
+        // Validate total_file_size against actual mapping
+        if (m_header->total_file_size > mapSize) {
+            m_base = nullptr; m_header = nullptr; return false;
+        }
+
         m_version = m_header->version;
+
+        // Helper: validate an offset + size fits within the mapping
+        auto inBounds = [mapSize](uint32_t offset, uint32_t size) -> bool {
+            return offset < mapSize && size <= mapSize - offset;
+        };
+
         if (m_version >= 3) {
-            // v3: sorted array format
+            // v3: sorted array format — validate all sections
             m_keyCount   = m_header->root_base;
+            uint32_t kiSize = m_keyCount * sizeof(uint32_t);   // keyOffsets[]
+            uint32_t ksSize = m_keyCount * sizeof(uint32_t);   // keyStarts[]
+            uint32_t kcSize = m_keyCount * sizeof(uint32_t);   // keyCounts[]
+            uint32_t kpSize = m_header->reserved[1];           // keyPool size
+
+            if (!inBounds(m_header->base_array_offset, kiSize) ||
+                !inBounds(m_header->check_array_offset, ksSize) ||
+                !inBounds(m_header->entry_offset_array_offset, kcSize)) {
+                m_base = nullptr; m_header = nullptr; return false;
+            }
+
             m_keyOffsets = reinterpret_cast<uint32_t*>(m_base + m_header->base_array_offset);
             m_keyStarts  = reinterpret_cast<uint32_t*>(m_base + m_header->check_array_offset);
             m_keyCounts  = reinterpret_cast<uint32_t*>(m_base + m_header->entry_offset_array_offset);
-            m_keyPool    = m_base + m_header->reserved[0];
+
+            // Key pool
+            uint32_t kpOff = m_header->reserved[0];
+            if (kpOff == 0) {
+                // Old compiler didn't write reserved[0]; compute from layout:
+                // layout: header(64) + keyOffsets(K*4) + keyStarts(K*4) + keyCounts(K*4) + entries(E*8)
+                kpOff = 64 + m_keyCount * 12 + m_header->entry_count * 8;
+            }
+            if (kpSize == 0) {
+                // reserved[1] not set by older compiler — compute from mapping bounds
+                kpSize = (uint32_t)(mapSize - kpOff);
+            }
+            if (!inBounds(kpOff, kpSize)) { m_base = nullptr; m_header = nullptr; return false; }
+            m_keyPool = m_base + kpOff;
+            m_keyPoolSize = kpSize;
         } else {
-            // v2: DAT format
+            // v2: DAT format — validate arrays
+            uint32_t sc = m_header->state_count;
+            uint32_t baSize = sc * sizeof(uint32_t);
+            uint32_t caSize = sc * sizeof(uint32_t);
+            uint32_t eoSize = sc * 2 * sizeof(uint32_t);
+
+            if (!inBounds(m_header->base_array_offset, baSize) ||
+                !inBounds(m_header->check_array_offset, caSize) ||
+                !inBounds(m_header->entry_offset_array_offset, eoSize)) {
+                m_base = nullptr; m_header = nullptr; return false;
+            }
             m_base_array    = reinterpret_cast<uint32_t*>(m_base + m_header->base_array_offset);
             m_check_array   = reinterpret_cast<uint32_t*>(m_base + m_header->check_array_offset);
             m_entry_offsets = reinterpret_cast<uint32_t*>(m_base + m_header->entry_offset_array_offset);
+        }
+
+        // Common: entry index + string pool
+        uint32_t eiSize = m_header->entry_count * sizeof(DictFileEntry);
+        if (!inBounds(m_header->entry_index_offset, eiSize) ||
+            !inBounds(m_header->string_pool_offset, m_header->string_pool_size)) {
+            m_base = nullptr; m_header = nullptr; return false;
         }
         m_entry_index = reinterpret_cast<DictFileEntry*>(m_base + m_header->entry_index_offset);
         m_string_pool = m_base + m_header->string_pool_offset;
@@ -72,6 +133,7 @@ public:
             uint32_t lo = 0, hi = m_keyCount;
             while (lo < hi) {
                 uint32_t mid = lo + (hi - lo) / 2;
+                if (m_keyPoolSize > 0 && m_keyOffsets[mid] >= m_keyPoolSize) { outCount = 0; return nullptr; }
                 const char* k = m_keyPool + m_keyOffsets[mid];
                 int cmp = key.compare(k);
                 if (cmp == 0) {

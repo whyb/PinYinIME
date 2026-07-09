@@ -364,9 +364,8 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
             }
         }
     }
-    // 始终监听 Shift 切换中英文 (不受中文模式限制)
-    // TSF 可能传 VK_SHIFT(0x10) 而非 VK_LSHIFT/VK_RSHIFT，需同时判断
-    if (!ctrlDown && !altDown && !winDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+    // 始终监听中英文切换热键 (不受中文模式限制)
+    if (isToggleHotkey(vk, ctrlDown, altDown, winDown)) {
         *pfEaten = TRUE;
     }
 
@@ -391,9 +390,8 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
     bool winDown  = (GetAsyncKeyState(VK_LWIN)    & 0x8000) != 0
                  || (GetAsyncKeyState(VK_RWIN)    & 0x8000) != 0;
 
-    // ── Shift 切换中/英文模式 ──
-    // TSF 可能传 VK_SHIFT(0x10) 而非 VK_LSHIFT/VK_RSHIFT，需同时判断
-    if (!ctrlDown && !altDown && !winDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+    // ── 切换中/英文模式 (使用配置的热键) ──
+    if (isToggleHotkey(vk, ctrlDown, altDown, winDown)) {
         if (m_chineseMode && !m_engine.m_buffer.empty()) {
             // 提交原始拼音为英文文本 (类似按 Enter 提交)
             std::string rawText = m_engine.m_buffer;

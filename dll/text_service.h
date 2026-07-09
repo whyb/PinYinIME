@@ -245,6 +245,19 @@ public:
     void showCandidateWindow();
     void hideCandidateWindow();
     void handleKeyCommit(int candidateIndex);
+
+    // Check if a key event matches the configured toggle hotkey
+    bool isToggleHotkey(DWORD vk, bool ctrl, bool alt, bool win) const {
+        DWORD mod = m_settings.toggleModifier;
+        DWORD key = m_settings.toggleHotkey;
+        if ((ctrl && mod != VK_CONTROL) || (!ctrl && mod == VK_CONTROL)) return false;
+        if ((alt  && mod != VK_MENU)    || (!alt  && mod == VK_MENU))    return false;
+        if (win) return false;
+        // Accept VK_SHIFT, VK_LSHIFT, VK_RSHIFT interchangeably
+        if (key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT)
+            return (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT);
+        return vk == key;
+    }
 };
 
 // QueryInterface 实现在 text_service.cpp (需要完整类型)

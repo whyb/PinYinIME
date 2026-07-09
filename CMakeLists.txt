@@ -172,6 +172,66 @@ set_target_properties(dict_compiler PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 
+# ==================== Tests ====================
+# Test dict service (isolated IPC names, no conflict with production)
+add_executable(test_service
+    test/test_service.cpp
+    ${SHARED_HEADERS}
+    shared/dict_binary.h
+    shared/ipc_protocol.h
+    shared/unique_handle.h
+)
+
+target_include_directories(test_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/test
+    ${CMAKE_SOURCE_DIR}/service
+    ${CMAKE_SOURCE_DIR}/shared
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_service PRIVATE
+    user32 kernel32 advapi32
+)
+
+# Copy dict.bin to test output for test_service
+add_custom_command(TARGET test_service POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:test_service>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE_DIR:PinyinIMEDictService>/dict.bin"
+        "$<TARGET_FILE_DIR:test_service>/dict.bin"
+    COMMENT "Copying dict.bin to test output..."
+)
+
+set_target_properties(test_service PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release/test"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug/test"
+)
+
+# Test IPC client (simulates typing, prints candidates)
+add_executable(test_client
+    test/test_client.cpp
+    ${SHARED_HEADERS}
+    shared/ipc_protocol.h
+    shared/unique_handle.h
+)
+
+target_include_directories(test_client PRIVATE
+    ${CMAKE_SOURCE_DIR}/test
+    ${CMAKE_SOURCE_DIR}/shared
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_client PRIVATE
+    user32 kernel32 advapi32
+)
+
+set_target_properties(test_client PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release/test"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug/test"
+)
+
 # ==================== 安装 ====================
 install(TARGETS PinyinIMETSF PinyinIME PinyinIMEDictService dict_compiler
     RUNTIME DESTINATION .

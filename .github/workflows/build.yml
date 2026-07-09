@@ -43,9 +43,6 @@ jobs:
           fuzzyF_H=0
           fuzzyEn_Eng=0
           fuzzyIn_Ing=0
-          smartCorrection=1
-          autoWordCreate=1
-          autoFreqAdjust=1
           chinesePunctuation=1
           toggleHotkey=16
           toggleModifier=17

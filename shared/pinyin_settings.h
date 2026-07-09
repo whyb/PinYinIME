@@ -36,9 +36,6 @@ struct PinyinSettings {
     bool fuzzyIn_Ing = false;
 
     // === 智能功能 ===
-    bool smartCorrection  = true;
-    bool autoWordCreate   = true;
-    bool autoFreqAdjust   = true;
     bool chinesePunctuation = true;
 
     // === 候选翻页 ===
@@ -49,6 +46,10 @@ struct PinyinSettings {
     // === 候选窗显示 ===
     bool showSettingsGear = true;        // 显示设置齿轮 ⚙
     bool roundedCorner = true;           // 候选框圆角
+
+    // === 快捷键 ===
+    DWORD toggleHotkey = VK_SHIFT;       // 中/英文切换键
+    DWORD toggleModifier = 0;            // 修饰键: 0=无, VK_MENU=Alt, VK_CONTROL=Ctrl
 
 
     // 预设皮肤
@@ -109,9 +110,6 @@ struct PinyinSettings {
             else if (key == "fuzzyF_H") fuzzyF_H = (val == "1");
             else if (key == "fuzzyEn_Eng") fuzzyEn_Eng = (val == "1");
             else if (key == "fuzzyIn_Ing") fuzzyIn_Ing = (val == "1");
-            else if (key == "smartCorrection") smartCorrection = (val == "1");
-            else if (key == "autoWordCreate") autoWordCreate = (val == "1");
-            else if (key == "autoFreqAdjust") autoFreqAdjust = (val == "1");
             else if (key == "chinesePunctuation") chinesePunctuation = (val == "1");
             else if (key == "enableMinusEqualsPage") enableMinusEqualsPage = (val == "1");
             else if (key == "enableCommaPeriodPage") enableCommaPeriodPage = (val == "1");
@@ -119,6 +117,8 @@ struct PinyinSettings {
             else if (key == "enableBracketPage") enableBracketPage = (val == "1");
             else if (key == "showSettingsGear") showSettingsGear = (val == "1");
             else if (key == "roundedCorner") roundedCorner = (val == "1");
+            else if (key == "toggleHotkey") toggleHotkey = (DWORD)safeStoul(val, VK_SHIFT);
+            else if (key == "toggleModifier") toggleModifier = (DWORD)safeStoul(val, 0);
         }
         return true;
     }
@@ -144,9 +144,6 @@ struct PinyinSettings {
         fout << "fuzzyF_H=" << fuzzyF_H << "\n";
         fout << "fuzzyEn_Eng=" << fuzzyEn_Eng << "\n";
         fout << "fuzzyIn_Ing=" << fuzzyIn_Ing << "\n";
-        fout << "smartCorrection=" << smartCorrection << "\n";
-        fout << "autoWordCreate=" << autoWordCreate << "\n";
-        fout << "autoFreqAdjust=" << autoFreqAdjust << "\n";
         fout << "chinesePunctuation=" << chinesePunctuation << "\n";
         fout << "enableMinusEqualsPage=" << enableMinusEqualsPage << "\n";
         fout << "enableCommaPeriodPage=" << enableCommaPeriodPage << "\n";
@@ -154,6 +151,8 @@ struct PinyinSettings {
         fout << "enableBracketPage=" << enableBracketPage << "\n";
         fout << "showSettingsGear=" << showSettingsGear << "\n";
         fout << "roundedCorner=" << roundedCorner << "\n";
+        fout << "toggleHotkey=" << (unsigned long)toggleHotkey << "\n";
+        fout << "toggleModifier=" << (unsigned long)toggleModifier << "\n";
         return true;
     }
 };
