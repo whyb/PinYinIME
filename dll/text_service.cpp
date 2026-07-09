@@ -59,7 +59,7 @@ CPinyinTextService::CPinyinTextService()
     : m_cRef(1), m_pThreadMgr(nullptr), m_clientId(0), m_activateFlags(0),
       m_dwKeyEventCookie(0), m_dwCompositionCookie(0), m_dwDisplayAttrCookie(0),
       m_dwCompartmentKeyboardCookie(0), m_dwCompartmentConversionCookie(0),
-      m_gdiplusToken(0), m_chineseMode(true),
+      m_gdiplusToken(0), m_chineseMode(true), m_shiftAlone(false),
       m_pendingAction(ACT_NONE), m_pComposition(nullptr), m_bComposing(false),
       m_pendingStripQuote(false)
 {
@@ -365,8 +365,15 @@ STDMETHODIMP CPinyinTextService::OnTestKeyDown(ITfContext*, WPARAM wParam, LPARA
         }
     }
     // 始终监听中英文切换热键 (不受中文模式限制)
+    // Plain Shift is NOT eaten here — it must pass through so Shift+key
+    // combinations (e.g. Shift+? → ？) work correctly. The mode toggle
+    // for plain Shift happens in OnKeyUp instead.
     if (isToggleHotkey(vk, ctrlDown, altDown, winDown)) {
-        *pfEaten = TRUE;
+        bool isPlainShift = !ctrlDown && !altDown && !winDown
+            && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT);
+        if (!isPlainShift) {
+            *pfEaten = TRUE;
+        }
     }
 
     return S_OK;
@@ -375,8 +382,31 @@ STDMETHODIMP CPinyinTextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* 
     *pfEaten = FALSE;
     return S_OK;
 }
-STDMETHODIMP CPinyinTextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* pfEaten) {
-    *pfEaten = FALSE;
+STDMETHODIMP CPinyinTextService::OnKeyUp(ITfContext*, WPARAM wParam, LPARAM, BOOL* pfEaten) {
+    DWORD vk = (DWORD)wParam;
+    // Toggle Chinese mode on plain Shift release — but only if no other
+    // key was pressed while Shift was held (otherwise it was a Shift+key
+    // combination, which should NOT toggle the mode).
+    if ((vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) && m_shiftAlone) {
+        bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool altDown  = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
+        if (!ctrlDown && !altDown) {
+            if (m_chineseMode && !m_engine.m_buffer.empty()) {
+                std::string rawText = m_engine.m_buffer;
+                rawText.erase(std::remove(rawText.begin(), rawText.end(), '\''), rawText.end());
+                m_engine.clear();
+                hideCandidateWindow();
+                commitComposition(utf8ToWide(rawText));
+            }
+            m_chineseMode = !m_chineseMode;
+            if (!m_chineseMode) {
+                m_engine.clear();
+                hideCandidateWindow();
+            }
+            *pfEaten = TRUE;
+        }
+    }
+    m_shiftAlone = false;
     return S_OK;
 }
 
@@ -392,21 +422,36 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
 
     // ── 切换中/英文模式 (使用配置的热键) ──
     if (isToggleHotkey(vk, ctrlDown, altDown, winDown)) {
-        if (m_chineseMode && !m_engine.m_buffer.empty()) {
-            // 提交原始拼音为英文文本 (类似按 Enter 提交)
-            std::string rawText = m_engine.m_buffer;
-            rawText.erase(std::remove(rawText.begin(), rawText.end(), '\''), rawText.end());
-            m_engine.clear();
-            hideCandidateWindow();
-            commitComposition(utf8ToWide(rawText));
+        bool isPlainShift = !ctrlDown && !altDown && !winDown
+            && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT);
+        if (isPlainShift) {
+            // Plain Shift: don't toggle yet — wait for OnKeyUp.
+            // If another key is pressed before Shift is released,
+            // m_shiftAlone gets cleared and the toggle is cancelled.
+            m_shiftAlone = true;
+            return S_OK;
+        } else {
+            // Ctrl+Shift, Alt+Shift, Ctrl+Space: toggle immediately
+            if (m_chineseMode && !m_engine.m_buffer.empty()) {
+                std::string rawText = m_engine.m_buffer;
+                rawText.erase(std::remove(rawText.begin(), rawText.end(), '\''), rawText.end());
+                m_engine.clear();
+                hideCandidateWindow();
+                commitComposition(utf8ToWide(rawText));
+            }
+            m_chineseMode = !m_chineseMode;
+            if (!m_chineseMode) {
+                m_engine.clear();
+                hideCandidateWindow();
+            }
+            *pfEaten = TRUE;
+            return S_OK;
         }
-        m_chineseMode = !m_chineseMode;
-        if (!m_chineseMode) {
-            m_engine.clear();
-            hideCandidateWindow();
-        }
-        *pfEaten = TRUE;
-        return S_OK;
+    }
+
+    // Any non-Shift key cancels the "Shift alone" flag
+    if (vk != VK_SHIFT && vk != VK_LSHIFT && vk != VK_RSHIFT) {
+        m_shiftAlone = false;
     }
 
     // 透传含 Ctrl/Win/Alt 的组合键
@@ -636,11 +681,22 @@ STDMETHODIMP CPinyinTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, 
 
     // ── 中文标点符号: 仅在中文模式下生效 ──
     // m_chineseMode ⊂ chinesePunctuation: 两者同时为 true 才转换全角标点
+    // If the candidate window is open, commit the selected candidate first,
+    // then append the punctuation (e.g. "nihao" + ";" → "你好；").
     if (m_chineseMode && m_settings.chinesePunctuation) {
         bool shiftDown2 = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const wchar_t* full = getFullWidthPunct(vk, shiftDown2);
         if (full) {
-            commitComposition(full);
+            if (!m_engine.m_buffer.empty() && !m_engine.m_candidates.empty()) {
+                int selIdx = m_candidateWin.m_selectedIndex;
+                int pageCount = (int)m_engine.getPageCandidates().size();
+                if (selIdx < 0 || selIdx >= pageCount) selIdx = 0;
+                std::string word = m_engine.selectCandidate(selIdx);
+                hideCandidateWindow();
+                commitComposition(utf8ToWide(word) + full);
+            } else {
+                commitComposition(full);
+            }
             *pfEaten = TRUE;
             return S_OK;
         }

@@ -193,6 +193,14 @@ target_link_libraries(test_service PRIVATE
     user32 kernel32 advapi32
 )
 
+# Kill stale test_service before linking (avoids file-lock errors)
+add_custom_command(TARGET test_service PRE_LINK
+    COMMAND cmd /c "taskkill /F /IM test_service.exe 2>nul & exit 0"
+    COMMAND ${CMAKE_COMMAND} -E sleep 1
+    COMMENT "Killing stale test_service.exe before linking..."
+    VERBATIM
+)
+
 # Copy dict.bin to test output for test_service
 add_custom_command(TARGET test_service POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:test_service>"

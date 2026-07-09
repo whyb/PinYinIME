@@ -187,6 +187,7 @@ private:
     PinyinSettings m_settings;
     ULONG_PTR m_gdiplusToken;
     bool m_chineseMode;
+    bool m_shiftAlone = false; // Shift pressed without any other key in between
 
     // 组合 (Composition) 状态
     enum PendingAction { ACT_NONE, ACT_START, ACT_UPDATE, ACT_COMMIT, ACT_CANCEL };
