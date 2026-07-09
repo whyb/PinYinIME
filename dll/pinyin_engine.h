@@ -362,43 +362,55 @@ public:
         std::string lookup = m_buffer;
         for (char& ch : lookup) if (ch >= 'A' && ch <= 'Z') ch += 32;
 
-        std::unordered_map<std::string, int> dictMatches;
-        auto exactEntries = m_dict.find(lookup);
-        for (auto& p : exactEntries) dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
-        // Prefix search: for single-char queries, do deep prefix expansion;
-        // for longer partial pinyin (e.g. "zhey" → "zheyang"), take more
-        // entries per key to surface rich multi-character word candidates.
-        { int maxDepth = 0; if (lookup.size() == 1) maxDepth = 6; else if (lookup.size() == 2) maxDepth = 5;
-          int maxPerKey = (lookup.size() >= 4) ? 5 : 3;
-          m_dict.prefixSearch(lookup, dictMatches, maxPerKey, maxDepth); }
+        // The IPC service returns results in exact-first-then-prefix order
+        // (BinaryDictReader::query). We preserve that order — don't re-sort
+        // by frequency or prefix results with higher freq would overtake
+        // exact matches (e.g. "年" from "nian" before "你" for "ni").
+        std::unordered_set<std::string> seen;
+        std::vector<std::pair<std::string,int>> dictVec;
 
-        // ── Fuzzy pinyin: query variants with frequency penalty ────────
-        auto fuzzyVariants = getFuzzyVariants(lookup);
-        for (auto& fv : fuzzyVariants) {
-            auto fe = m_dict.find(fv);
-            // Apply penalty so exact matches always rank above fuzzy matches
-            for (auto& p : fe) {
-                int penalizedFreq = (std::max)(1, p.freq / 3);
-                dictMatches[p.word] = (std::max)(dictMatches[p.word], penalizedFreq);
+        // 1. Exact + prefix lookup (service does both via BinaryDictReader::query)
+        auto entries = m_dict.find(lookup);
+        for (auto& p : entries) {
+            if (seen.insert(p.word).second)
+                dictVec.push_back({p.word, p.freq});
+        }
+
+        // 2. User dictionary (exact matches — insert after dict exact,
+        //    keep in same tier as exact dict results, sorted by user freq)
+        auto uit = m_userDict.find(lookup);
+        if (uit != m_userDict.end()) {
+            // Insert user dict entries after the last exact match from the dict.
+            // We estimate "exact" as entries whose word pinyin exactly matches
+            // (single-character words are almost certainly exact matches).
+            // For simplicity, user entries are appended right after dict results
+            // but before DP-generated combinations.
+            for (auto& p : uit->second) {
+                if (seen.insert(p.first).second)
+                    dictVec.push_back({p.first, p.second});
             }
         }
 
-        auto uit = m_userDict.find(lookup);
-        if (uit != m_userDict.end()) for (auto& p : uit->second) dictMatches[p.first] = (std::max)(dictMatches[p.first], p.second);
+        // 3. Fuzzy pinyin variants — penalized, appended at end
+        auto fuzzyVariants = getFuzzyVariants(lookup);
+        for (auto& fv : fuzzyVariants) {
+            auto fe = m_dict.find(fv);
+            for (auto& p : fe) {
+                if (seen.insert(p.word).second)
+                    dictVec.push_back({p.word, (std::max)(1, p.freq / 3)});
+            }
+        }
 
-        std::vector<std::pair<std::string,int>> dictVec;
-        for (auto& kv : dictMatches) dictVec.push_back(kv);
-        std::sort(dictVec.begin(), dictVec.end(), [](const auto& a, const auto& b){ return a.second > b.second; });
-
+        // 4. DP segmentation combinations (appended after all dict results)
         std::vector<std::pair<std::string,int>> dpVec;
         if (lookup.size() >= 3) {
             auto segs = segmentPinyin(lookup);
             if (!segs.empty()) {
                 auto combined = genCombinedCandidates(segs);
-                std::unordered_map<std::string, int> dpUniq;
-                for (auto& c : combined) if (dictMatches.find(c.first) == dictMatches.end()) dpUniq[c.first] = (std::max)(dpUniq[c.first], c.second);
-                for (auto& kv : dpUniq) dpVec.push_back(kv);
-                std::sort(dpVec.begin(), dpVec.end(), [](const auto& a, const auto& b){ return a.second > b.second; });
+                for (auto& c : combined) {
+                    if (seen.insert(c.first).second)
+                        dpVec.push_back(c);
+                }
             }
         }
         m_candidates = dictVec;

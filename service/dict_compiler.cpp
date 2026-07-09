@@ -94,12 +94,19 @@ int loadRimeFile(const std::string& fp, bool addAbbrev, bool buildCharMap,
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) { fprintf(stderr, "Usage: dict_compiler <indir> <out.bin> [--max-chars N]\n"); return 1; }
+    if (argc < 3) {
+        fprintf(stderr, "Usage: dict_compiler <indir> <out.bin> [--max-chars N] [--hotwords N]\n");
+        return 1;
+    }
     std::string id = argv[1], op = argv[2];
-    for (int i = 3; i < argc; ++i)
+    int hotCount = 0;
+    for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "--max-chars") == 0 && i + 1 < argc) {
             g_maxChars = atoi(argv[++i]); if (g_maxChars < 1) g_maxChars = 1;
+        } else if (strcmp(argv[i], "--hotwords") == 0 && i + 1 < argc) {
+            hotCount = atoi(argv[++i]); if (hotCount < 100) hotCount = 100;
         }
+    }
     if (!id.empty() && id.back() != '\\' && id.back() != '/') id += '\\';
     printf("Dict Compiler v2 (sorted array, max-chars=%d)\n", g_maxChars);
 
@@ -219,6 +226,64 @@ int main(int argc, char* argv[]) {
     if (!f) { fprintf(stderr, "ERROR: open\n"); return false; }
     fwrite(buf.data(), 1, total, f); fclose(f);
     printf("  Total: %.2f MB\n", total / (1024.0 * 1024.0));
+
+    // Phase 5: Hot words compilation (optional)
+    if (hotCount > 0) {
+        printf("[Phase5] Compiling top-%d hot words...\n", hotCount);
+
+        // Collect multi-character words, dedup by word (keep max freq)
+        struct HotEntry { std::string py, word; int32_t freq; };
+        std::unordered_map<std::string, HotEntry> hotDedup;  // word → best entry
+
+        for (auto& e : all) {
+            if (utf8CharCount(e.word) < 2) continue;
+            auto it = hotDedup.find(e.word);
+            if (it == hotDedup.end() || e.freq > it->second.freq) {
+                hotDedup[e.word] = {e.pinyin, e.word, e.freq};
+            }
+        }
+
+        std::vector<HotEntry> hotEntries;
+        hotEntries.reserve(hotDedup.size());
+        for (auto& kv : hotDedup) hotEntries.push_back(kv.second);
+
+        // Sort by frequency descending
+        std::sort(hotEntries.begin(), hotEntries.end(),
+            [](const HotEntry& a, const HotEntry& b) { return a.freq > b.freq; });
+
+        if ((int)hotEntries.size() > hotCount) hotEntries.resize(hotCount);
+
+        // Write hotwords.bin next to dict.bin
+        std::string hotPath = op;
+        // Replace extension with _hotwords.bin
+        size_t slash = hotPath.find_last_of("/\\");
+        size_t dot = hotPath.rfind('.');
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+            hotPath = hotPath.substr(0, dot);
+        }
+        hotPath += "_hotwords.bin";
+
+        FILE* hf = fopen(hotPath.c_str(), "wb");
+        if (!hf) { fprintf(stderr, "  ERROR: cannot create hotwords file\n"); }
+        else {
+            uint32_t count = (uint32_t)hotEntries.size();
+            fwrite(&count, 4, 1, hf);
+
+            for (auto& he : hotEntries) {
+                uint16_t pyLen = (uint16_t)he.py.size();
+                uint16_t wLen  = (uint16_t)he.word.size();
+                fwrite(&pyLen, 2, 1, hf);
+                fwrite(he.py.data(), 1, pyLen, hf);
+                fwrite(&wLen, 2, 1, hf);
+                fwrite(he.word.data(), 1, wLen, hf);
+                fwrite(&he.freq, 4, 1, hf);
+            }
+            fclose(hf);
+            printf("  Hot words: %u entries → %s (%.2f MB)\n",
+                   count, hotPath.c_str(), (4.0 + count * 12) / (1024 * 1024));
+        }
+    }
+
     printf("Done.\n");
     return 0;
 }

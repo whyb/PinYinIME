@@ -16,6 +16,8 @@
 #include <unordered_map>
 
 #include "../shared/dict_binary.h"
+#include "../shared/hot_dict.h"
+#include <unordered_set>
 #include "../shared/ipc_protocol.h"
 #include "../shared/unique_handle.h"
 #include "test_common.h"
@@ -96,6 +98,18 @@ public:
         }
         LOG("[TestService] Dict loaded OK: %zu keys, %zu entries (find('ni')=%u)\n",
             m_dictReader.stateCount(), m_dictReader.entryCount(), tc);
+
+        // Load hot word cache
+        {
+            char hotPath[MAX_PATH];
+            WideCharToMultiByte(CP_UTF8, 0, dictPath, -1, hotPath, MAX_PATH, nullptr, nullptr);
+            char* d = strrchr(hotPath, '.');
+            if (d) *d = '\0';
+            strcat_s(hotPath, "_hotwords.bin");
+            if (m_hotCache.load(hotPath)) {
+                LOG("[TestService] Hot cache: %zu entries\n", m_hotCache.count());
+            }
+        }
         return true;
     }
 
@@ -232,6 +246,16 @@ private:
 
         auto results = m_dictReader.query(query, IPC_MAX_CANDIDATES);
 
+        // Augment with hot cache
+        if (m_hotCache.isLoaded()) {
+            auto hotResults = m_hotCache.query(query, 32);
+            std::unordered_set<std::string> seen;
+            for (auto& r : results) seen.insert(r.first);
+            for (auto& h : hotResults) {
+                if (seen.insert(h.first).second) results.push_back(h);
+            }
+        }
+
         LOG(" -> %zu candidates\n", results.size());
 
         // Write output
@@ -265,6 +289,7 @@ private:
     unique_handle    m_dictMapping;
     scoped_unmap     m_dictView;
     BinaryDictReader m_dictReader;
+    HotWordCache     m_hotCache;
     unique_handle    m_hIpcMapping;
     scoped_unmap     m_ipcView;
     unique_handle    m_hEvtQuery;

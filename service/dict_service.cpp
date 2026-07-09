@@ -14,11 +14,13 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <atomic>
 
 #include "../shared/unique_handle.h"
 #include "../shared/dict_binary.h"
+#include "../shared/hot_dict.h"
 #include "../shared/ipc_protocol.h"
 #include "../shared/ime_ipc.h"
 
@@ -90,6 +92,20 @@ public:
         }
         LOG("OK: Dictionary loaded (%zu states, %zu entries)",
             m_dictReader.stateCount(), m_dictReader.entryCount());
+
+        // Load hot word cache (e.g. dict_hotwords.bin)
+        {
+            char hotPath[MAX_PATH];
+            WideCharToMultiByte(CP_UTF8, 0, dictBinPath, -1, hotPath, MAX_PATH, nullptr, nullptr);
+            char* dot = strrchr(hotPath, '.');
+            if (dot) *dot = '\0';
+            strcat_s(hotPath, "_hotwords.bin");
+            if (m_hotCache.load(hotPath)) {
+                LOG("OK: Hot cache loaded (%zu entries)", m_hotCache.count());
+            } else {
+                LOG("NOTE: Hot cache not found (%s) — partial pinyin still works via dict.bin", hotPath);
+            }
+        }
 
         if (!createIpcChannel()) {
             LOG("FAIL: createIpcChannel");
@@ -359,6 +375,20 @@ private:
         // Combined exact + prefix lookup (shared logic in BinaryDictReader::query)
         auto sorted = m_dictReader.query(query, IPC_MAX_CANDIDATES);
 
+        // Augment with hot cache (fast prefix-matched multi-char words)
+        if (m_hotCache.isLoaded()) {
+            auto hotResults = m_hotCache.query(query, 32);
+            // Merge: add hot words not already in sorted, with frequencies
+            // from the hot cache. Hot cache entries are sorted by freq desc.
+            std::unordered_set<std::string> seen;
+            for (auto& s : sorted) seen.insert(s.first);
+            for (auto& h : hotResults) {
+                if (seen.insert(h.first).second) {
+                    sorted.push_back(h);
+                }
+            }
+        }
+
         // Write to output buffer
         IpcCandidate* candidates = ipcOutputBuf(base);
         char* strArea = ipcStringArea(base);
@@ -395,6 +425,7 @@ private:
     unique_handle    m_dictMapping;
     scoped_unmap     m_dictView;
     BinaryDictReader m_dictReader;
+    HotWordCache     m_hotCache;      // Top-N frequent multi-char words
     unique_handle    m_ipcMapping;
     scoped_unmap     m_ipcView;
     unique_handle    m_hEvtQuery;

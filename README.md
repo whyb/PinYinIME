@@ -120,12 +120,13 @@
 dict.bin 由 `dict_compiler.exe` 离线编译生成：
 
 ```
-dict_compiler.exe cn_dicts dict.bin [--max-chars N]
+dict_compiler.exe cn_dicts dict.bin [--max-chars N] [--hotwords N]
 ```
 
 - 解析 rime-ice YAML 词库文件（8105 字表、41448 大字表、base/ext/others/tencent 词组）
 - 按汉字字数过滤（默认最多 3 字），长词由输入法引擎的增量查询自动处理
 - 生成排序数组格式的二进制词库（v3 格式），编译秒级完成
+- `--hotwords N`：额外编译一个高频多字词热缓存（`dict_hotwords.bin`），用于加速部分拼音前缀补全
 - 运行时通过 `MapViewOfFile` 零解析加载，二分查找精确匹配（O(log n)），前缀扫描完成联想
 
 ### IPC 协议
