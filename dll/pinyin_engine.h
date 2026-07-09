@@ -365,8 +365,12 @@ public:
         std::unordered_map<std::string, int> dictMatches;
         auto exactEntries = m_dict.find(lookup);
         for (auto& p : exactEntries) dictMatches[p.word] = (std::max)(dictMatches[p.word], p.freq);
+        // Prefix search: for single-char queries, do deep prefix expansion;
+        // for longer partial pinyin (e.g. "zhey" → "zheyang"), take more
+        // entries per key to surface rich multi-character word candidates.
         { int maxDepth = 0; if (lookup.size() == 1) maxDepth = 6; else if (lookup.size() == 2) maxDepth = 5;
-          m_dict.prefixSearch(lookup, dictMatches, 3, maxDepth); }
+          int maxPerKey = (lookup.size() >= 4) ? 5 : 3;
+          m_dict.prefixSearch(lookup, dictMatches, maxPerKey, maxDepth); }
 
         // ── Fuzzy pinyin: query variants with frequency penalty ────────
         auto fuzzyVariants = getFuzzyVariants(lookup);

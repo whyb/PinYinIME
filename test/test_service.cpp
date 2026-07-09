@@ -13,6 +13,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstdarg>
+#include <unordered_map>
 
 #include "../shared/dict_binary.h"
 #include "../shared/ipc_protocol.h"
@@ -229,18 +230,7 @@ private:
 
         LOG("  [%llu] Query: \"%s\"", queryId, query.c_str());
 
-        // Lookup
-        std::vector<std::pair<const char*, int32_t>> results;
-        if (m_dictReader.isReady()) {
-            uint32_t exactCount = 0;
-            const DictFileEntry* exact = m_dictReader.find(query, exactCount);
-            if (exact && exactCount > 0) {
-                for (uint32_t i = 0; i < exactCount && results.size() < IPC_MAX_CANDIDATES; ++i) {
-                    const char* word = m_dictReader.getWord(exact[i].word_offset);
-                    if (word) results.push_back({word, exact[i].frequency});
-                }
-            }
-        }
+        auto results = m_dictReader.query(query, IPC_MAX_CANDIDATES);
 
         LOG(" -> %zu candidates\n", results.size());
 
@@ -252,9 +242,9 @@ private:
 
         for (auto& r : results) {
             if (count >= IPC_MAX_CANDIDATES) break;
-            size_t len = strlen(r.first) + 1;
+            size_t len = r.first.size() + 1;
             if (strOff + len > IPC_STRING_AREA_SIZE) break;
-            memcpy(strArea + strOff, r.first, len);
+            memcpy(strArea + strOff, r.first.c_str(), len);
             output[count].word_offset = IPC_STRING_AREA_OFFSET + strOff;
             output[count].frequency = r.second;
             strOff += (uint32_t)len;

@@ -356,38 +356,12 @@ private:
             return;
         }
 
-        std::unordered_map<std::string, int> results;
+        // Combined exact + prefix lookup (shared logic in BinaryDictReader::query)
+        auto sorted = m_dictReader.query(query, IPC_MAX_CANDIDATES);
+
+        // Write to output buffer
         IpcCandidate* candidates = ipcOutputBuf(base);
         char* strArea = ipcStringArea(base);
-
-        // 1. Exact match
-        uint32_t exactCount = 0;
-        const DictFileEntry* exactEntries = m_dictReader.find(query, exactCount);
-        if (exactEntries && exactCount > 0) {
-            uint32_t take = (std::min)(exactCount, IPC_MAX_CANDIDATES);
-            for (uint32_t i = 0; i < take; ++i) {
-                const char* word = m_dictReader.getWord(exactEntries[i].word_offset);
-                if (!word) continue;
-                results[std::string(word)] = exactEntries[i].frequency;
-            }
-        }
-
-        // 2. Prefix search
-        if (query.size() <= 4) {
-            int maxDepth = 0;
-            if (query.size() == 1) maxDepth = 6;
-            else if (query.size() == 2) maxDepth = 5;
-            m_dictReader.prefixSearch(query, results, 3, maxDepth);
-        }
-
-        // 3. Sort
-        std::vector<std::pair<std::string, int>> sorted;
-        sorted.reserve(results.size());
-        for (auto& kv : results) sorted.push_back(kv);
-        std::sort(sorted.begin(), sorted.end(),
-            [](const auto& a, const auto& b) { return a.second > b.second; });
-
-        // 4. Write to output buffer
         uint32_t totalFound = static_cast<uint32_t>(sorted.size());
         uint32_t outCount = (std::min)(totalFound, IPC_MAX_CANDIDATES);
         uint32_t strOffset = 0;
@@ -407,13 +381,12 @@ private:
         InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->status), IPC_STATUS_REPLY_READY);
         SetEvent(m_hEvtReply.get());
 
-        // Log query summary (only for non-empty results to reduce noise; always log first few & every 100th)
+        // Log query summary
         if (outCount > 0 || queryId <= 3 || queryId % 100 == 0) {
-            LOG("Q#%llu: '%s' -> exact=%u prefix+exact=%u sent=%u/%u",
-                queryId, query.c_str(), exactCount, totalFound, outCount, totalFound);
+            LOG("Q#%llu: '%s' -> total=%u sent=%u/%u",
+                queryId, query.c_str(), totalFound, outCount, totalFound);
             if (outCount > 0) {
-                const char* top = m_dictReader.getWord(candidates[0].word_offset);
-                LOG("  top: '%s' (freq=%d)", top ? top : "?", candidates[0].frequency);
+                LOG("  top: '%s' (freq=%d)", sorted[0].first.c_str(), sorted[0].second);
             }
         }
     }

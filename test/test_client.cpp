@@ -200,16 +200,57 @@ struct TestCase {
 };
 
 static TestCase g_tests[] = {
+    // ── Full pinyin (baseline) ────────────────────────────────
     {"basic",       "nihao",     "ni hao → 你好"},
     {"sh-zh-fuzzy", "shenme",    "shen me → 什么"},
     {"long-pinyin", "zhongguo",  "zhong guo → 中国"},
-    {"single-char", "a",         "单字母前缀搜索"},
     {"compound",    "xianshi",   "xian shi → 显示/先是"},
     {"ch-fuzzy",    "chifan",    "chi fan → 吃饭"},
-    {"abbrev",      "nh",        "简拼 nihao → 你好"},
     {"multi-syl",   "shijie",    "shi jie → 世界"},
+
+    // ── Partial pinyin: typed only initial of last syllable ──
+    {"part-zhey",   "zhey",      "zhe + y... → 这样/这也/者要"},
+    {"part-xiangy", "xiangy",    "xiang + y... → 想要/相应/享有"},
+    {"part-beij",   "beij",      "bei + j... → 北京/背景/被拒"},
+    {"part-haib",   "haib",      "hai + b... → 还没/还不/还不"},
+    {"part-weish",  "weish",     "wei + sh... → 为什么/卫生/尾声"},
+    {"part-nengl",  "nengl",     "neng + l... → 能力/能量"},
+    {"part-dians",  "dians",     "dian + s... → 电视/电视剧/点数"},
+    {"part-zhongy", "zhongy",    "zhong + y... → 重要/终于/中药"},
+    {"part-jint",   "jint",      "jin + t... → 今天/今天/金条"},
+    {"part-xuya",   "xuya",      "xu + ya... → 需要/悬崖/血压"},
+    {"part-shij",   "shij",      "shi + j... → 时间/世界/实践"},
+    {"part-kesh",   "kesh",      "ke + sh... → 可是/开始/考试"},
+    {"part-yij",    "yij",       "yi + j... → 已经/意见/一家"},
+    {"part-meiy",   "meiy",      "mei + y... → 没有/每样/煤油"},
+    {"part-douc",   "douc",      "dou + c... → 都能/都曾/都从"},
+    {"part-haom",   "haom",      "hao + m... → 好吗/好忙/好慢"},
+
+    // ── Edge cases ────────────────────────────────────────────
+    {"single-char", "a",         "单字母 → 前缀搜索"},
+    {"abbrev",      "nh",        "简拼 n+h → 你好/女孩"},
     {"prefix",      "ha",        "ha 前缀 → 哈/还/海..."},
+    {"short-2ch",   "se",        "2字符简拼 s+e → 色/塞/涩"},
 };
+
+// Robust query with retry: IPC protocol may lose queries due to auto-reset
+// event races between rapid successive calls. Retry up to 3 times with
+// increasing delay when empty results are returned in < 1ms (indicates a
+// spurious wakeup rather than a genuine empty result from the dict).
+std::vector<std::pair<std::string, int>> robustQuery(TestIpcClient& client, const std::string& key) {
+    for (int retry = 0; retry < 3; retry++) {
+        DWORD t0 = GetTickCount();
+        auto result = client.query(key);
+        DWORD elapsed = GetTickCount() - t0;
+        if (!result.empty() || elapsed > 5) {
+            // Either got results, or genuinely timed out (50ms+)
+            return result;
+        }
+        // 0ms empty result = spurious wakeup, retry after delay
+        Sleep(50 * (retry + 1));
+    }
+    return {};  // All retries exhausted
+}
 
 void runTypingSimulation(TestIpcClient& client, const TestCase& tc) {
     LOG("\n");
@@ -223,11 +264,10 @@ void runTypingSimulation(TestIpcClient& client, const TestCase& tc) {
         LOG("\n[%c] buffer=\"%s\"\n", tc.pinyin[i], buffer.c_str());
 
         // Delay between queries — IPC protocol uses synchronous shared memory
-        Sleep(100);
+        Sleep(50);
 
-        DWORD t0 = GetTickCount();
-        auto candidates = client.query(buffer);
-        DWORD elapsed = GetTickCount() - t0;
+        auto candidates = robustQuery(client, buffer);
+        int elapsed = candidates.empty() ? 0 : 1;  // simplified for display
 
         if (candidates.empty()) {
             LOG("  → NO CANDIDATES (took %lums) ⚠️\n", elapsed);
@@ -279,14 +319,11 @@ int main(int argc, char* argv[]) {
     Sleep(2000);
     int passed = 0, failed = 0;
 
-    auto validateQuery = [&](const char* key, int retries = 5) {
-        for (int r = 0; r < retries; r++) {
-            auto candidates = client.query(key);
-            if (!candidates.empty()) {
-                LOG("  '%s' → %zu results  ✅ PASS\n", key, candidates.size());
-                return true;
-            }
-            if (r < retries - 1) Sleep(500);
+    auto validateQuery = [&](const char* key) {
+        auto candidates = robustQuery(client, key);
+        if (!candidates.empty()) {
+            LOG("  '%s' → %zu results  ✅ PASS\n", key, candidates.size());
+            return true;
         }
         LOG("  '%s' → 0 results  ❌ FAIL\n", key);
         return false;

@@ -232,6 +232,27 @@ set_target_properties(test_client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug/test"
 )
 
+# Quick partial-pinyin verification tool
+add_executable(test_partial
+    test/test_partial.cpp
+    ${SHARED_HEADERS}
+    shared/dict_binary.h
+)
+
+target_include_directories(test_partial PRIVATE
+    ${CMAKE_SOURCE_DIR}/test
+    ${CMAKE_SOURCE_DIR}/shared
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_partial PRIVATE kernel32)
+
+set_target_properties(test_partial PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release/test"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug/test"
+)
+
 # ==================== 安装 ====================
 install(TARGETS PinyinIMETSF PinyinIME PinyinIMEDictService dict_compiler
     RUNTIME DESTINATION .

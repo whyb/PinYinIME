@@ -160,6 +160,39 @@ cmake --build build --config Release
 
 所有产物均静态链接 CRT (`/MT`)，无需安装任何运行时。
 
+### 测试
+
+项目附带一个轻量级词库查询测试工具，可直接验证拼音候选词，无需注册 IME 或启动 IPC 服务：
+
+```cmd
+# 构建
+cmake --build build --config Release --target test_partial
+
+# 查询任意拼音的候选词
+build\Release\test\Release\test_partial.exe nihao
+build\Release\test\Release\test_partial.exe zhongg
+build\Release\test\Release\test_partial.exe xianz
+```
+
+工具直接读取 `dict.bin` 进行精确匹配 + 前缀搜索，输出 Top 20 候选词及频率。支持未输完的拼音，例如：
+
+```
+> test_partial.exe xianz
+══ "xianz" ══
+  Exact: none
+  Prefix: 294 results: 现在(503182) 限制(500607) 现状(500251) 闲置(89840)...
+```
+
+还有完整的 IPC 集成测试（需要两个终端）：
+
+```cmd
+cmake --build build --config Release --target test_service --target test_client
+:: 终端 1: build\Release\test\Release\test_service.exe
+:: 终端 2: build\Release\test\Release\test_client.exe -v
+```
+
+测试客户端模拟逐字母打字，逐击键显示候选词，最后以退出码报告通过/失败。
+
 ---
 
 ## 使用方法

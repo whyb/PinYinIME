@@ -234,6 +234,65 @@ public:
         return m_string_pool + offset;
     }
 
+    // ── Combined query: exact find + prefix search ──────────────────
+    //
+    // The canonical dict lookup used by both the production service and
+    // test tools. Does exact key lookup first, then prefix search for
+    // partial pinyin completion (e.g. "xianz" → "xianzai" → 现在).
+    //
+    // Exact matches always rank ABOVE prefix matches, regardless of
+    // frequency. Within each tier, results are sorted by frequency desc.
+    //
+    // maxResults: clamp output to this size (0 = no limit)
+    std::vector<std::pair<std::string, int>> query(const std::string& pinyin,
+                                                    size_t maxResults = 0) const {
+        std::vector<std::pair<std::string, int>> out;
+        if (!isReady() || pinyin.empty()) return out;
+
+        std::unordered_map<std::string, int> exactMap;
+        std::unordered_map<std::string, int> prefixMap;
+
+        // 1. Exact match
+        uint32_t exactCount = 0;
+        const DictFileEntry* exact = find(pinyin, exactCount);
+        if (exact && exactCount > 0) {
+            for (uint32_t i = 0; i < exactCount; ++i) {
+                const char* w = getWord(exact[i].word_offset);
+                if (!w) continue;
+                auto& v = exactMap[std::string(w)];
+                v = (std::max)(v, exact[i].frequency);
+            }
+        }
+
+        // 2. Prefix search — skip words already in exactMap
+        {
+            int maxDepth = 0;
+            if (pinyin.size() == 1) maxDepth = 6;
+            else if (pinyin.size() == 2) maxDepth = 5;
+            int maxPerKey = (pinyin.size() >= 4) ? 5 : 3;
+            prefixSearch(pinyin, prefixMap, maxPerKey, maxDepth);
+        }
+        // Remove prefix results that also appear in exact results (exact wins)
+        for (auto it = prefixMap.begin(); it != prefixMap.end(); ) {
+            if (exactMap.count(it->first)) it = prefixMap.erase(it);
+            else ++it;
+        }
+
+        // 3. Output: exact matches first (by freq), then prefix matches (by freq)
+        out.reserve(exactMap.size() + prefixMap.size());
+        for (auto& kv : exactMap) out.push_back(kv);
+        std::sort(out.begin(), out.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        size_t exactSize = out.size();
+        for (auto& kv : prefixMap) out.push_back(kv);
+        std::sort(out.begin() + exactSize, out.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        if (maxResults > 0 && out.size() > maxResults) out.resize(maxResults);
+        return out;
+    }
+
     size_t stateCount() const { return m_version >= 3 ? m_keyCount : (m_header ? m_header->state_count : 0); }
     size_t entryCount() const { return m_header ? m_header->entry_count : 0; }
 
